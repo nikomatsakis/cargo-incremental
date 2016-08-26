@@ -3,9 +3,11 @@ extern crate git2;
 extern crate rustc_serialize;
 
 use docopt::Docopt;
-use git2::{Commit, Object, Repository};
+use git2::{Commit, Object, Repository, Status};
 use git2::build::CheckoutBuilder;
 use std::env;
+use std::io;
+use std::io::prelude::*;
 use std::path::Path;
 
 const USAGE: &'static str = "
@@ -32,8 +34,10 @@ struct Args {
 macro_rules! error {
     ($($args:tt)*) => {
         {
-            print!("error: ");
-            println!($($args)*);
+            let mut stderr = io::stderr();
+            let mut stderr = stderr.lock();
+            write!(stderr, "error: ").unwrap();
+            writeln!(stderr, $($args)*).unwrap();
             ::std::process::exit(1)
         }
     }
@@ -48,6 +52,8 @@ fn main() {
         Ok(repo) => repo,
         Err(e) => error!("failed to open repository `{}`: {}", args.flag_repo, e),
     };
+
+    check_clean(repo);
 
     let revisions = match repo.revparse(&args.flag_revisions) {
         Ok(revspec) => revspec,
@@ -87,6 +93,29 @@ fn main() {
     for commit in &commits {
         println!("checking out {:?}", short_id(commit));
         checkout(repo, commit);
+    }
+}
+
+fn check_clean(repo: &Repository) {
+    let statuses = match repo.statuses(None) {
+        Ok(s) => s,
+        Err(err) => error!("could not load git repository status: {}", err)
+    };
+
+    let mut errors = 0;
+    let dirty_status = Status::all();
+    for status in statuses.iter() {
+        if status.status().intersects(dirty_status) {
+            let mut stderr = io::stderr();
+            let mut stderr = stderr.lock();
+            if let Some(p) = status.path() {
+                writeln!(stderr, "file `{}` is dirty", p).unwrap();
+            }
+            errors += 1;
+        }
+    }
+    if errors > 0 {
+        error!("cannot run with a dirty repository; clean it first");
     }
 }
 
