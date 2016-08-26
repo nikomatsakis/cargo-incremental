@@ -1,0 +1,9 @@
+[package]
+name = "cargo-fuzz-incr-git"
+version = "0.1.0"
+authors = ["Niko Matsakis <niko@alum.mit.edu>"]
+
+[dependencies]
+docopt = "0.6.82"
+git2 = "0.4.4"
+rustc-serialize = "0.3.19"
