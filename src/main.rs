@@ -16,7 +16,6 @@ Usage: cargo-fuzz-incr-git [options]
        cargo-fuzz-incr-git --help
 
 Options:
-    --repo REPO        path to repository [default: .]
     --cargo CARGO      path to Cargo.toml [default: Cargo.toml]
     --revisions REV    range of revisions to test [default: HEAD~5..HEAD]
     --verbose          dump information as we go
@@ -25,7 +24,6 @@ Options:
 
 #[derive(RustcDecodable)]
 struct Args {
-    flag_repo: String,
     flag_cargo: String,
     flag_revisions: String,
     flag_verbose: bool,
