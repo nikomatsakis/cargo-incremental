@@ -3,12 +3,13 @@ extern crate git2;
 extern crate rustc_serialize;
 
 use docopt::Docopt;
-use git2::{Commit, Object, Repository, Status};
+use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status};
 use git2::build::CheckoutBuilder;
 use std::env;
 use std::io;
 use std::io::prelude::*;
 use std::path::Path;
+use std::process::Command;
 
 const USAGE: &'static str = "
 Usage: cargo-fuzz-incr-git [options]
@@ -48,9 +49,18 @@ fn main() {
         .and_then(|d| d.argv(env::args().into_iter()).decode())
         .unwrap_or_else(|e| e.exit());
 
-    let ref repo = match Repository::open(&args.flag_repo) {
+    let cargo_toml_path = Path::new(&args.flag_cargo);
+
+    if !cargo_toml_path.exists() || !cargo_toml_path.is_file() {
+        error!("cargo path `{}` does not lead to a `Cargo.toml` file",
+               cargo_toml_path.display());
+    }
+
+    let ref repo = match open_repo(cargo_toml_path) {
         Ok(repo) => repo,
-        Err(e) => error!("failed to open repository `{}`: {}", args.flag_repo, e),
+        Err(e) => error!("failed to find repository containing `{}`: {}",
+                         cargo_toml_path.display(),
+                         e),
     };
 
     check_clean(repo);
@@ -93,13 +103,37 @@ fn main() {
     for commit in &commits {
         println!("checking out {:?}", short_id(commit));
         checkout(repo, commit);
+        cargo_build(&args);
+    }
+}
+
+fn open_repo(cargo_path: &Path) -> Result<Repository, Git2Error> {
+    let mut git_path = cargo_path;
+
+    loop {
+        if git_path.is_dir() {
+            match Repository::open(git_path) {
+                Ok(r) => return Ok(r),
+                Err(err) => {
+                    match err.code() {
+                        ErrorCode::NotFound => { }
+                        _ => { return Err(err); }
+                    }
+                }
+            }
+        }
+
+        git_path = match git_path.parent() {
+            Some(p) => p,
+            None => return Repository::open(cargo_path),
+        }
     }
 }
 
 fn check_clean(repo: &Repository) {
     let statuses = match repo.statuses(None) {
         Ok(s) => s,
-        Err(err) => error!("could not load git repository status: {}", err)
+        Err(err) => error!("could not load git repository status: {}", err),
     };
 
     let mut errors = 0;
@@ -119,13 +153,20 @@ fn check_clean(repo: &Repository) {
     }
 }
 
+fn cargo_build(args: &Args) {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build");
+    cmd.current_dir("");
+}
+
 fn checkout(repo: &Repository, commit: &Commit) {
     let mut cb = CheckoutBuilder::new();
     match repo.checkout_tree(commit.as_object(), Some(&mut cb)) {
         Ok(()) => {}
         Err(err) => {
             error!("encountered error checking out `{}`: {}",
-                   short_id(commit), err)
+                   short_id(commit),
+                   err)
         }
     }
 
@@ -133,7 +174,8 @@ fn checkout(repo: &Repository, commit: &Commit) {
         Ok(()) => {}
         Err(err) => {
             error!("encountered error adjusting head to `{}`: {}",
-                   short_id(commit), err)
+                   short_id(commit),
+                   err)
         }
     }
 }
