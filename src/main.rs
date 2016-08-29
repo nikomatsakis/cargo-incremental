@@ -19,11 +19,22 @@ const USAGE: &'static str = "
 Usage: cargo-fuzz-incr-git [options]
        cargo-fuzz-incr-git --help
 
+This will run a fuzzing operation where it checks out various
+revisions of your project and tries to build and test them both
+incrementally and normally.  We will check that the results are the
+same and also track how much reuse is achieved.
+
+To do this, a temporary `work` directory is needed (specified by
+`--work-dir`).  Note that this directory is **completely deleted**
+before execution begins so don't supply a directory with valuable
+contents. =)
+
 Options:
     --cargo CARGO      path to Cargo.toml [default: Cargo.toml]
     --revisions REV    range of revisions to test [default: HEAD~5..HEAD]
     --verbose          dump information as we go
-    --work-dir DIR     directory where we can do our work [default: incr]
+    --work-dir DIR     directory where we can do our work [default: work]
+    --just-current     track just the current projection incrementally, not all deps
 ";
 
 #[derive(RustcDecodable)]
@@ -32,6 +43,7 @@ struct Args {
     flag_revisions: String,
     flag_verbose: bool,
     flag_work_dir: String,
+    flag_just_current: bool,
 }
 
 macro_rules! error {
@@ -104,18 +116,22 @@ fn main() {
 
     let commits = find_path(from_commit, to_commit);
 
+    // Start out by cleaning up any existing work directory.
+    let work_dir = Path::new(&args.flag_work_dir);
+    remove_dir(work_dir);
+
     // We structure our work directory like:
     //
     // work/incr <-- compiler state
     // work/commits/1231123 <-- output from building 1231123
-    let incr_dir = Path::new(&args.flag_work_dir).join("incr");
+    let incr_dir = work_dir.join("incr");
     remove_dir(&incr_dir);
     make_dir(&incr_dir);
     let incr_dir = match fs::canonicalize(&incr_dir) {
         Ok(i) => i,
         Err(err) => error!("failed to canonicalize `{}`: {}", incr_dir.display(), err),
     };
-    let commits_dir = Path::new(&args.flag_work_dir).join("commits");
+    let commits_dir = work_dir.join("commits");
     make_dir(&commits_dir);
 
     println!("incr_dir: {}", incr_dir.display());
@@ -125,7 +141,7 @@ fn main() {
         None => error!("Cargo.toml path has no parent: {}", args.flag_cargo),
     };
 
-    for (index,commit) in commits.iter().enumerate() {
+    for (index, commit) in commits.iter().enumerate() {
         let short_id = short_id(commit);
 
         println!("processing {:?}", short_id);
@@ -140,14 +156,25 @@ fn main() {
 
         let commit_dir = commits_dir.join(format!("{:05}-{}-build", index, short_id));
         make_dir(&commit_dir);
-        cargo_build(&cargo_dir, &incr_dir, &commit_dir);
+        let options = if args.flag_just_current {
+            IncrementalOptions::CurrentProject
+        } else {
+            IncrementalOptions::AllDeps
+        };
+        cargo_build(&cargo_dir, &incr_dir, &commit_dir, options);
     }
 }
 
 fn remove_dir(path: &Path) {
-    match fs::remove_dir_all(path) {
-        Ok(()) => {}
-        Err(err) => error!("error removing directory `{}`: {}", path.display(), err),
+    if path.exists() {
+        if !path.is_dir() {
+            error!("`{}` is not a directory", path.display());
+        }
+
+        match fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(err) => error!("error removing directory `{}`: {}", path.display(), err),
+        }
     }
 }
 
@@ -217,19 +244,48 @@ fn cargo_clean(cargo_dir: &Path, commit_dir: &Path) {
     }
 }
 
-fn cargo_build(cargo_dir: &Path, incr_dir: &Path, commit_dir: &Path) {
-    let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
-    let output = Command::new("cargo")
-        .arg("build")
-        .arg("-v")
-        .current_dir(&cargo_dir)
-        .env("RUSTFLAGS",
-             format!("-Z incremental={} -Z incremental-info {}",
-                     incr_dir.display(),
-                     rustflags))
-        .output();
+#[derive(Copy, Clone, Debug)]
+enum IncrementalOptions {
+    None,
+    AllDeps,
+    CurrentProject,
+}
+
+fn cargo_build(cargo_dir: &Path,
+               incr_dir: &Path,
+               commit_dir: &Path,
+               incremental: IncrementalOptions) {
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&cargo_dir);
+    match incremental {
+        IncrementalOptions::None => {
+            cmd.arg("build").arg("-v");
+        }
+        IncrementalOptions::AllDeps => {
+            let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
+            cmd.arg("build")
+                .arg("-v")
+                .env("RUSTFLAGS",
+                     format!("-Z incremental={} -Z incremental-info {}",
+                             incr_dir.display(),
+                             rustflags));
+        }
+        IncrementalOptions::CurrentProject => {
+            cmd.arg("rustc")
+                .arg("-v")
+                .arg("--")
+                .arg("-Z")
+                .arg(format!("incremental={}", incr_dir.display()))
+                .arg("-Z")
+                .arg("incremental-info");
+        }
+    }
+    let output = cmd.output();
     let output = match output {
-        Ok(output) => { save_output(commit_dir, &output); output }
+        Ok(output) => {
+            save_output(commit_dir, &output);
+            output
+        }
         Err(err) => error!("failed to execute `cargo build`: {}", err),
     };
 
