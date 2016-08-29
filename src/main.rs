@@ -144,18 +144,17 @@ fn main() {
     for (index, commit) in commits.iter().enumerate() {
         let short_id = short_id(commit);
 
-
         update_percent(index, &short_id, 0);
         checkout(repo, commit);
 
         update_percent(index, &short_id, 1);
         let commit_dir = commits_dir.join(format!("{:04}-{}-build-normal", index, short_id));
         make_dir(&commit_dir);
-        cargo_build(&cargo_dir,
-                    &commit_dir,
-                    &target_normal_dir,
-                    IncrementalOptions::None,
-                    &mut stats[0]);
+        let normal_messages = cargo_build(&cargo_dir,
+                                          &commit_dir,
+                                          &target_normal_dir,
+                                          IncrementalOptions::None,
+                                          &mut stats[0]);
 
         update_percent(index, &short_id, 2);
         let commit_dir = commits_dir.join(format!("{:04}-{}-build-incr", index, short_id));
@@ -165,21 +164,23 @@ fn main() {
         } else {
             IncrementalOptions::AllDeps(&incr_dir)
         };
-        cargo_build(&cargo_dir,
-                    &commit_dir,
-                    &target_incr_dir,
-                    options,
-                    &mut stats[1]);
+        let incr_messages = cargo_build(&cargo_dir,
+                                        &commit_dir,
+                                        &target_incr_dir,
+                                        options,
+                                        &mut stats[1]);
+
+        if normal_messages != incr_messages {
+            error!("incremental build differed from normal build")
+        }
     }
 
     assert!(stats[0].modules_reused == 0, "normal build reused modules");
     println!("");
     println!("Fuzzing report:");
     println!("- {} commits built", commits.len());
-    println!("- normal compilation took {:.2}s",
-             stats[0].build_time);
-    println!("- incremental compilation took {:.2}s",
-             stats[1].build_time);
+    println!("- normal compilation took {:.2}s", stats[0].build_time);
+    println!("- incremental compilation took {:.2}s", stats[1].build_time);
     println!("- normal/incremental ratio {:.2}",
              stats[0].build_time / stats[1].build_time);
     println!("- {} of {} (or {:.0}%) modules were re-used",
@@ -281,11 +282,25 @@ enum IncrementalOptions<'p> {
     CurrentProject(&'p Path),
 }
 
+#[derive(PartialEq, Eq, Debug)]
+struct BuildResult {
+    success: bool,
+    messages: Vec<Message>,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+struct Message {
+    kind: String,
+    message: String,
+    location: String,
+}
+
 fn cargo_build(cargo_dir: &Path,
                commit_dir: &Path,
                target_dir: &Path,
                incremental: IncrementalOptions,
-               stats: &mut CompilationStats) {
+               stats: &mut CompilationStats)
+               -> BuildResult {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
     cmd.env("CARGO_TARGET_DIR", target_dir);
@@ -322,31 +337,48 @@ fn cargo_build(cargo_dir: &Path,
     };
 
     // compute how much re-use we are getting
-    let stdout = into_string(output.stdout);
-    let stderr = into_string(output.stderr);
-    let reusing_regex = Regex::new(r"^incremental: re-using (\d+) out of (\d+) modules$").unwrap();
-    let build_time_regex = Regex::new(r"^\s*Finished .* target\(s\) in ([0-9.]+) secs$").unwrap();
+    let all_bytes: Vec<u8> = output.stdout
+        .iter()
+        .cloned()
+        .chain(output.stderr.iter().cloned())
+        .collect();
+    let all_output = into_string(all_bytes);
+
+    let reusing_regex = Regex::new(r"(?m)^incremental: re-using (\d+) out of (\d+) modules$")
+        .unwrap();
+    for captures in reusing_regex.captures_iter(&all_output) {
+        let reused = u64::from_str(captures.at(1).unwrap()).unwrap();
+        let total = u64::from_str(captures.at(2).unwrap()).unwrap();
+        stats.modules_reused += reused;
+        stats.modules_total += total;
+    }
+
+    let build_time_regex = Regex::new(r"(?m)^\s*Finished .* target\(s\) in ([0-9.]+) secs$")
+        .unwrap();
     let mut build_time = None;
-    for line in stdout.lines().chain(stderr.lines()) {
-        if let Some(captures) = reusing_regex.captures(line) {
-            let reused = u64::from_str(captures.at(1).unwrap()).unwrap();
-            let total = u64::from_str(captures.at(2).unwrap()).unwrap();
-            stats.modules_reused += reused;
-            stats.modules_total += total;
+    for captures in build_time_regex.captures_iter(&all_output) {
+        if build_time.is_some() {
+            error!("cargo reported total build time twice");
         }
 
-        if let Some(captures) = build_time_regex.captures(line) {
-            if build_time.is_some() {
-                error!("cargo reported total build time twice");
+        build_time = Some(f64::from_str(captures.at(1).unwrap()).unwrap());
+    }
+    stats.build_time += build_time.unwrap_or_else(|| error!("cargo did not report build time"));
+
+    let message_regex = Regex::new("(?m)(warning|error): (.*)\n  --> ([^:]:\\d+:\\d+)$").unwrap();
+    let messages = message_regex.captures_iter(&all_output)
+        .map(|captures| {
+            Message {
+                kind: captures.at(1).unwrap().to_string(),
+                message: captures.at(2).unwrap().to_string(),
+                location: captures.at(3).unwrap().to_string(),
             }
-
-            build_time = Some(f64::from_str(captures.at(1).unwrap()).unwrap());
-        }
+        })
+        .collect();
+    BuildResult {
+        success: output.status.success(),
+        messages: messages,
     }
-    if build_time.is_none() {
-        error!("cargo never reported total build time");
-    }
-    stats.build_time += build_time.unwrap();
 }
 
 fn into_string(bytes: Vec<u8>) -> String {
