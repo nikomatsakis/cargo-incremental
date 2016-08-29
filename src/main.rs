@@ -150,6 +150,7 @@ fn main() {
         let percentage = progress / total * 100.0;
         bar.reach_percent(percentage as i32);
     };
+    let mut stats = vec![CompilationStats::default(), CompilationStats::default()];
     for (index, commit) in commits.iter().enumerate() {
         let short_id = short_id(commit);
 
@@ -160,7 +161,11 @@ fn main() {
         update_percent(index, &short_id, 1);
         let commit_dir = commits_dir.join(format!("{:04}-{}-build-normal", index, short_id));
         make_dir(&commit_dir);
-        cargo_build(&cargo_dir, &commit_dir, &target_incr_dir, IncrementalOptions::None);
+        cargo_build(&cargo_dir,
+                    &commit_dir,
+                    &target_normal_dir,
+                    IncrementalOptions::None,
+                    &mut stats[0]);
 
         update_percent(index, &short_id, 2);
         let commit_dir = commits_dir.join(format!("{:04}-{}-build-incr", index, short_id));
@@ -170,12 +175,25 @@ fn main() {
         } else {
             IncrementalOptions::AllDeps(&incr_dir)
         };
-        cargo_build(&cargo_dir, &commit_dir, &target_incr_dir, options);
+        cargo_build(&cargo_dir,
+                    &commit_dir,
+                    &target_incr_dir,
+                    options,
+                    &mut stats[1]);
     }
 }
 
+#[derive(Default)]
+struct CompilationStats {
+    build_time: f64, // in seconds
+    modules_reused: u64,
+    modules_total: u64,
+}
+
 fn absolute_dir_path(path: &Path) -> PathBuf {
-    assert!(!path.exists(), "absolute_dir_path: path {} already exists", path.display());
+    assert!(!path.exists(),
+            "absolute_dir_path: path {} already exists",
+            path.display());
     make_dir(&path);
     match fs::canonicalize(&path) {
         Ok(i) => i,
@@ -261,7 +279,8 @@ enum IncrementalOptions<'p> {
 fn cargo_build(cargo_dir: &Path,
                commit_dir: &Path,
                target_dir: &Path,
-               incremental: IncrementalOptions) {
+               incremental: IncrementalOptions,
+               stats: &mut CompilationStats) {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
     cmd.env("CARGO_TARGET_DIR", target_dir);
@@ -298,17 +317,37 @@ fn cargo_build(cargo_dir: &Path,
     };
 
     // compute how much re-use we are getting
-    let string = match String::from_utf8(output.stdout) {
-        Ok(v) => v,
-        Err(_) => error!("unable to parse output as utf-8"),
-    };
-    let reusing_regex = Regex::new(r"incremental: re-using (\d+) out of (\d+) modules").unwrap();
-    for line in string.lines() {
+    let stdout = into_string(output.stdout);
+    let stderr = into_string(output.stderr);
+    let reusing_regex = Regex::new(r"^incremental: re-using (\d+) out of (\d+) modules$").unwrap();
+    let build_time_regex = Regex::new(r"^\s*Finished .* target\(s\) in ([0-9.]+) secs$").unwrap();
+    let mut build_time = None;
+    for line in stdout.lines().chain(stderr.lines()) {
         if let Some(captures) = reusing_regex.captures(line) {
             let reused = u64::from_str(captures.at(1).unwrap()).unwrap();
             let total = u64::from_str(captures.at(2).unwrap()).unwrap();
-            let percent = (reused as f64) / (total as f64) * 100.0;
+            stats.modules_reused += reused;
+            stats.modules_total += total;
         }
+
+        if let Some(captures) = build_time_regex.captures(line) {
+            if build_time.is_some() {
+                error!("cargo reported total build time twice");
+            }
+
+            build_time = Some(f64::from_str(captures.at(1).unwrap()).unwrap());
+        }
+    }
+    if build_time.is_none() {
+        error!("cargo never reported total build time");
+    }
+    stats.build_time += build_time.unwrap();
+}
+
+fn into_string(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(v) => v,
+        Err(_) => error!("unable to parse output as utf-8"),
     }
 }
 
