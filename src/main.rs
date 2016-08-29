@@ -34,7 +34,6 @@ contents. =)
 Options:
     --cargo CARGO      path to Cargo.toml [default: Cargo.toml]
     --revisions REV    range of revisions to test [default: HEAD~5..HEAD]
-    --verbose          dump information as we go
     --work-dir DIR     directory where we can do our work [default: work]
     --just-current     track just the current projection incrementally, not all deps
 ";
@@ -43,7 +42,6 @@ Options:
 struct Args {
     flag_cargo: String,
     flag_revisions: String,
-    flag_verbose: bool,
     flag_work_dir: String,
     flag_just_current: bool,
 }
@@ -104,14 +102,6 @@ fn main() {
                    args.flag_revisions)
         }
     };
-
-    let from_short = short_id(from_object);
-    let to_short = short_id(to_object);
-
-    if args.flag_verbose {
-        println!("from SHA1: {}", from_short);
-        println!("to SHA1: {}", to_short);
-    }
 
     let from_commit = commit_or_error(from_object.clone());
     let to_commit = commit_or_error(to_object.clone());
@@ -181,6 +171,21 @@ fn main() {
                     options,
                     &mut stats[1]);
     }
+
+    assert!(stats[0].modules_reused == 0, "normal build reused modules");
+    println!("");
+    println!("Fuzzing report:");
+    println!("- {} commits built", commits.len());
+    println!("- normal compilation took {:.2}s",
+             stats[0].build_time);
+    println!("- incremental compilation took {:.2}s",
+             stats[1].build_time);
+    println!("- normal/incremental ratio {:.2}",
+             stats[0].build_time / stats[1].build_time);
+    println!("- {} of {} (or {:.0}%) modules were re-used",
+             stats[1].modules_reused,
+             stats[1].modules_total,
+             (stats[1].modules_reused as f64 / stats[1].modules_total as f64) * 100.0);
 }
 
 #[derive(Default)]
