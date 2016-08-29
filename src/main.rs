@@ -11,7 +11,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::str::FromStr;
 
@@ -122,15 +122,12 @@ fn main() {
 
     // We structure our work directory like:
     //
+    // work/target-incr <-- cargo state when building incrementally
     // work/incr <-- compiler state
     // work/commits/1231123 <-- output from building 1231123
-    let incr_dir = work_dir.join("incr");
-    remove_dir(&incr_dir);
-    make_dir(&incr_dir);
-    let incr_dir = match fs::canonicalize(&incr_dir) {
-        Ok(i) => i,
-        Err(err) => error!("failed to canonicalize `{}`: {}", incr_dir.display(), err),
-    };
+    let target_incr_dir = absolute_dir_path(&work_dir.join("target-incr"));
+    let target_normal_dir = absolute_dir_path(&work_dir.join("target-normal"));
+    let incr_dir = absolute_dir_path(&work_dir.join("incr"));
     let commits_dir = work_dir.join("commits");
     make_dir(&commits_dir);
 
@@ -148,20 +145,26 @@ fn main() {
 
         checkout(repo, commit);
 
-        if index == 0 {
-            let commit_dir = commits_dir.join(format!("{:05}-{}-clean", index, short_id));
-            make_dir(&commit_dir);
-            cargo_clean(&cargo_dir, &commit_dir);
-        }
+        let commit_dir = commits_dir.join(format!("{:04}-{}-build-normal", index, short_id));
+        cargo_build(&cargo_dir, &commit_dir, &target_incr_dir, IncrementalOptions::None);
 
-        let commit_dir = commits_dir.join(format!("{:05}-{}-build", index, short_id));
+        let commit_dir = commits_dir.join(format!("{:04}-{}-build-incr", index, short_id));
         make_dir(&commit_dir);
         let options = if args.flag_just_current {
-            IncrementalOptions::CurrentProject
+            IncrementalOptions::CurrentProject(&incr_dir)
         } else {
-            IncrementalOptions::AllDeps
+            IncrementalOptions::AllDeps(&incr_dir)
         };
-        cargo_build(&cargo_dir, &incr_dir, &commit_dir, options);
+        cargo_build(&cargo_dir, &commit_dir, &target_incr_dir, options);
+    }
+}
+
+fn absolute_dir_path(path: &Path) -> PathBuf {
+    assert!(!path.exists(), "absolute_dir_path: path {} already exists", path.display());
+    make_dir(&path);
+    match fs::canonicalize(&path) {
+        Ok(i) => i,
+        Err(err) => error!("failed to canonicalize `{}`: {}", path.display(), err),
     }
 }
 
@@ -233,35 +236,25 @@ fn check_clean(repo: &Repository) {
     }
 }
 
-fn cargo_clean(cargo_dir: &Path, commit_dir: &Path) {
-    let output = Command::new("cargo")
-        .arg("clean")
-        .current_dir(&cargo_dir)
-        .output();
-    match output {
-        Ok(output) => save_output(commit_dir, &output),
-        Err(err) => error!("failed to execute `cargo clean`: {}", err),
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
-enum IncrementalOptions {
+enum IncrementalOptions<'p> {
     None,
-    AllDeps,
-    CurrentProject,
+    AllDeps(&'p Path),
+    CurrentProject(&'p Path),
 }
 
 fn cargo_build(cargo_dir: &Path,
-               incr_dir: &Path,
                commit_dir: &Path,
+               target_dir: &Path,
                incremental: IncrementalOptions) {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
+    cmd.env("CARGO_TARGET_DIR", target_dir);
     match incremental {
         IncrementalOptions::None => {
             cmd.arg("build").arg("-v");
         }
-        IncrementalOptions::AllDeps => {
+        IncrementalOptions::AllDeps(incr_dir) => {
             let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
             cmd.arg("build")
                 .arg("-v")
@@ -270,7 +263,7 @@ fn cargo_build(cargo_dir: &Path,
                              incr_dir.display(),
                              rustflags));
         }
-        IncrementalOptions::CurrentProject => {
+        IncrementalOptions::CurrentProject(incr_dir) => {
             cmd.arg("rustc")
                 .arg("-v")
                 .arg("--")
