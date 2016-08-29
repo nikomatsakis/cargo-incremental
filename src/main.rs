@@ -2,10 +2,12 @@ extern crate docopt;
 extern crate git2;
 extern crate regex;
 extern crate rustc_serialize;
+extern crate progress;
 
 use docopt::Docopt;
 use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status, STATUS_IGNORED};
 use git2::build::CheckoutBuilder;
+use progress::Bar;
 use regex::Regex;
 use std::env;
 use std::fs::{self, File};
@@ -138,16 +140,29 @@ fn main() {
         None => error!("Cargo.toml path has no parent: {}", args.flag_cargo),
     };
 
+    let mut bar = Bar::new();
+    let stages = &["checkout", "normal build", "incremental build"];
+    let mut update_percent = |crate_index: usize, crate_id: &str, stage_index: usize| {
+        bar.set_job_title(&format!("processing {} ({})", crate_id, stages[stage_index]));
+        let num_stages = stages.len() as f32;
+        let progress = (crate_index as f32 * num_stages) + (stage_index as f32);
+        let total = (commits.len() as f32) * num_stages;
+        let percentage = progress / total * 100.0;
+        bar.reach_percent(percentage as i32);
+    };
     for (index, commit) in commits.iter().enumerate() {
         let short_id = short_id(commit);
 
-        println!("processing {:?}", short_id);
 
+        update_percent(index, &short_id, 0);
         checkout(repo, commit);
 
+        update_percent(index, &short_id, 1);
         let commit_dir = commits_dir.join(format!("{:04}-{}-build-normal", index, short_id));
+        make_dir(&commit_dir);
         cargo_build(&cargo_dir, &commit_dir, &target_incr_dir, IncrementalOptions::None);
 
+        update_percent(index, &short_id, 2);
         let commit_dir = commits_dir.join(format!("{:04}-{}-build-incr", index, short_id));
         make_dir(&commit_dir);
         let options = if args.flag_just_current {
@@ -293,7 +308,6 @@ fn cargo_build(cargo_dir: &Path,
             let reused = u64::from_str(captures.at(1).unwrap()).unwrap();
             let total = u64::from_str(captures.at(2).unwrap()).unwrap();
             let percent = (reused as f64) / (total as f64) * 100.0;
-            println!("re-use: {}/{} ({:.0}%)", reused, total, percent);
         }
     }
 }
