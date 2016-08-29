@@ -131,7 +131,8 @@ fn main() {
     };
 
     let mut bar = Bar::new();
-    let stages = &["checkout", "normal build", "incremental build"];
+    let stages =
+        &["checkout", "normal build", "normal test", "incremental build", "incremental test"];
     let mut update_percent = |crate_index: usize, crate_id: &str, stage_index: usize| {
         bar.set_job_title(&format!("processing {} ({})", crate_id, stages[stage_index]));
         let num_stages = stages.len() as f32;
@@ -148,7 +149,7 @@ fn main() {
         checkout(repo, commit);
 
         update_percent(index, &short_id, 1);
-        let commit_dir = commits_dir.join(format!("{:04}-{}-build-normal", index, short_id));
+        let commit_dir = commits_dir.join(format!("{:04}-{}-normal-build", index, short_id));
         make_dir(&commit_dir);
         let normal_messages = cargo_build(&cargo_dir,
                                           &commit_dir,
@@ -157,9 +158,17 @@ fn main() {
                                           &mut stats[0]);
 
         update_percent(index, &short_id, 2);
-        let commit_dir = commits_dir.join(format!("{:04}-{}-build-incr", index, short_id));
+        let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
         make_dir(&commit_dir);
-        let options = if args.flag_just_current {
+        let normal_test = cargo_test(&cargo_dir,
+                                     &commit_dir,
+                                     &target_normal_dir,
+                                     IncrementalOptions::None);
+
+        update_percent(index, &short_id, 3);
+        let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build", index, short_id));
+        make_dir(&commit_dir);
+        let incr_options = if args.flag_just_current {
             IncrementalOptions::CurrentProject(&incr_dir)
         } else {
             IncrementalOptions::AllDeps(&incr_dir)
@@ -167,11 +176,20 @@ fn main() {
         let incr_messages = cargo_build(&cargo_dir,
                                         &commit_dir,
                                         &target_incr_dir,
-                                        options,
+                                        incr_options,
                                         &mut stats[1]);
+
+        update_percent(index, &short_id, 4);
+        let commit_dir = commits_dir.join(format!("{:04}-{}-incr-test", index, short_id));
+        make_dir(&commit_dir);
+        let incr_test = cargo_test(&cargo_dir, &commit_dir, &target_incr_dir, incr_options);
 
         if normal_messages != incr_messages {
             error!("incremental build differed from normal build")
+        }
+
+        if normal_test != incr_test {
+            error!("incremental tests differed from normal tests")
         }
     }
 
@@ -295,6 +313,18 @@ struct Message {
     location: String,
 }
 
+#[derive(PartialEq, Eq, Debug)]
+struct TestResult {
+    success: bool,
+    results: Vec<TestCaseResult>,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+struct TestCaseResult {
+    test_name: String,
+    status: String,
+}
+
 fn cargo_build(cargo_dir: &Path,
                commit_dir: &Path,
                target_dir: &Path,
@@ -375,9 +405,63 @@ fn cargo_build(cargo_dir: &Path,
             }
         })
         .collect();
+
     BuildResult {
         success: output.status.success(),
         messages: messages,
+    }
+}
+
+fn cargo_test(cargo_dir: &Path,
+              commit_dir: &Path,
+              target_dir: &Path,
+              incremental: IncrementalOptions)
+              -> TestResult {
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&cargo_dir);
+    cmd.env("CARGO_TARGET_DIR", target_dir);
+    cmd.arg("test");
+    match incremental {
+        IncrementalOptions::None => {}
+        IncrementalOptions::AllDeps(incr_dir) |
+        IncrementalOptions::CurrentProject(incr_dir) => {
+            let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
+            cmd.env("RUSTFLAGS",
+                    format!("-Z incremental={} -Z incremental-info {}",
+                            incr_dir.display(),
+                            rustflags));
+        }
+    }
+    let output = cmd.output();
+    let output = match output {
+        Ok(output) => {
+            save_output(commit_dir, &output);
+            output
+        }
+        Err(err) => error!("failed to execute `cargo build`: {}", err),
+    };
+
+    // compute set of tests and their results
+    let all_bytes: Vec<u8> = output.stdout
+        .iter()
+        .cloned()
+        .chain(output.stderr.iter().cloned())
+        .collect();
+    let all_output = into_string(all_bytes);
+
+    let test_regex = Regex::new(r"(?m)^test (.*) ... (\w+)").unwrap();
+    let test_results: Vec<_> = test_regex.captures_iter(&all_output)
+        .map(|captures| {
+            TestCaseResult {
+                test_name: captures.at(1).unwrap().to_string(),
+                status: captures.at(2).unwrap().to_string(),
+            }
+        })
+        .collect();
+
+    TestResult {
+        success: output.status.success(),
+        results: test_results,
     }
 }
 
