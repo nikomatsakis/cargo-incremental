@@ -1,15 +1,19 @@
 extern crate docopt;
 extern crate git2;
+extern crate regex;
 extern crate rustc_serialize;
 
 use docopt::Docopt;
-use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status};
+use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status, STATUS_IGNORED};
 use git2::build::CheckoutBuilder;
+use regex::Regex;
 use std::env;
+use std::fs::{self, File};
 use std::io;
 use std::io::prelude::*;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
+use std::str::FromStr;
 
 const USAGE: &'static str = "
 Usage: cargo-fuzz-incr-git [options]
@@ -19,7 +23,7 @@ Options:
     --cargo CARGO      path to Cargo.toml [default: Cargo.toml]
     --revisions REV    range of revisions to test [default: HEAD~5..HEAD]
     --verbose          dump information as we go
-    --target-dir DIR   directory to do our checkouts in [default: fuzz]
+    --work-dir DIR     directory where we can do our work [default: incr]
 ";
 
 #[derive(RustcDecodable)]
@@ -27,13 +31,13 @@ struct Args {
     flag_cargo: String,
     flag_revisions: String,
     flag_verbose: bool,
-    flag_target_dir: String,
+    flag_work_dir: String,
 }
 
 macro_rules! error {
     ($($args:tt)*) => {
         {
-            let mut stderr = io::stderr();
+            let stderr = io::stderr();
             let mut stderr = stderr.lock();
             write!(stderr, "error: ").unwrap();
             writeln!(stderr, $($args)*).unwrap();
@@ -56,9 +60,11 @@ fn main() {
 
     let ref repo = match open_repo(cargo_toml_path) {
         Ok(repo) => repo,
-        Err(e) => error!("failed to find repository containing `{}`: {}",
-                         cargo_toml_path.display(),
-                         e),
+        Err(e) => {
+            error!("failed to find repository containing `{}`: {}",
+                   cargo_toml_path.display(),
+                   e)
+        }
     };
 
     check_clean(repo);
@@ -98,10 +104,57 @@ fn main() {
 
     let commits = find_path(from_commit, to_commit);
 
-    for commit in &commits {
-        println!("checking out {:?}", short_id(commit));
+    // We structure our work directory like:
+    //
+    // work/incr <-- compiler state
+    // work/commits/1231123 <-- output from building 1231123
+    let incr_dir = Path::new(&args.flag_work_dir).join("incr");
+    remove_dir(&incr_dir);
+    make_dir(&incr_dir);
+    let incr_dir = match fs::canonicalize(&incr_dir) {
+        Ok(i) => i,
+        Err(err) => error!("failed to canonicalize `{}`: {}", incr_dir.display(), err),
+    };
+    let commits_dir = Path::new(&args.flag_work_dir).join("commits");
+    make_dir(&commits_dir);
+
+    println!("incr_dir: {}", incr_dir.display());
+
+    let cargo_dir = match Path::new(&args.flag_cargo).parent() {
+        Some(p) => p,
+        None => error!("Cargo.toml path has no parent: {}", args.flag_cargo),
+    };
+
+    for (index,commit) in commits.iter().enumerate() {
+        let short_id = short_id(commit);
+
+        println!("processing {:?}", short_id);
+
         checkout(repo, commit);
-        cargo_build(&args);
+
+        if index == 0 {
+            let commit_dir = commits_dir.join(format!("{:05}-{}-clean", index, short_id));
+            make_dir(&commit_dir);
+            cargo_clean(&cargo_dir, &commit_dir);
+        }
+
+        let commit_dir = commits_dir.join(format!("{:05}-{}-build", index, short_id));
+        make_dir(&commit_dir);
+        cargo_build(&cargo_dir, &incr_dir, &commit_dir);
+    }
+}
+
+fn remove_dir(path: &Path) {
+    match fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(err) => error!("error removing directory `{}`: {}", path.display(), err),
+    }
+}
+
+fn make_dir(path: &Path) {
+    match fs::create_dir_all(path) {
+        Ok(()) => {}
+        Err(err) => error!("cannot create work-directory `{}`: {}", path.display(), err),
     }
 }
 
@@ -114,8 +167,10 @@ fn open_repo(cargo_path: &Path) -> Result<Repository, Git2Error> {
                 Ok(r) => return Ok(r),
                 Err(err) => {
                     match err.code() {
-                        ErrorCode::NotFound => { }
-                        _ => { return Err(err); }
+                        ErrorCode::NotFound => {}
+                        _ => {
+                            return Err(err);
+                        }
                     }
                 }
             }
@@ -135,10 +190,10 @@ fn check_clean(repo: &Repository) {
     };
 
     let mut errors = 0;
-    let dirty_status = Status::all();
+    let dirty_status = Status::all() - STATUS_IGNORED;
     for status in statuses.iter() {
         if status.status().intersects(dirty_status) {
-            let mut stderr = io::stderr();
+            let stderr = io::stderr();
             let mut stderr = stderr.lock();
             if let Some(p) = status.path() {
                 writeln!(stderr, "file `{}` is dirty", p).unwrap();
@@ -151,10 +206,69 @@ fn check_clean(repo: &Repository) {
     }
 }
 
-fn cargo_build(args: &Args) {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build");
-    cmd.current_dir("");
+fn cargo_clean(cargo_dir: &Path, commit_dir: &Path) {
+    let output = Command::new("cargo")
+        .arg("clean")
+        .current_dir(&cargo_dir)
+        .output();
+    match output {
+        Ok(output) => save_output(commit_dir, &output),
+        Err(err) => error!("failed to execute `cargo clean`: {}", err),
+    }
+}
+
+fn cargo_build(cargo_dir: &Path, incr_dir: &Path, commit_dir: &Path) {
+    let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("-v")
+        .current_dir(&cargo_dir)
+        .env("RUSTFLAGS",
+             format!("-Z incremental={} -Z incremental-info {}",
+                     incr_dir.display(),
+                     rustflags))
+        .output();
+    let output = match output {
+        Ok(output) => { save_output(commit_dir, &output); output }
+        Err(err) => error!("failed to execute `cargo build`: {}", err),
+    };
+
+    // compute how much re-use we are getting
+    let string = match String::from_utf8(output.stdout) {
+        Ok(v) => v,
+        Err(_) => error!("unable to parse output as utf-8"),
+    };
+    let reusing_regex = Regex::new(r"incremental: re-using (\d+) out of (\d+) modules").unwrap();
+    for line in string.lines() {
+        if let Some(captures) = reusing_regex.captures(line) {
+            let reused = u64::from_str(captures.at(1).unwrap()).unwrap();
+            let total = u64::from_str(captures.at(2).unwrap()).unwrap();
+            let percent = (reused as f64) / (total as f64) * 100.0;
+            println!("re-use: {}/{} ({:.0}%)", reused, total, percent);
+        }
+    }
+}
+
+fn save_output(output_dir: &Path, output: &Output) {
+    write_file(&output_dir.join("status"),
+               format!("{}", output.status).as_bytes());
+    write_file(&output_dir.join("stdout"), &output.stdout);
+    write_file(&output_dir.join("stderr"), &output.stderr);
+}
+
+fn create_file(path: &Path) -> File {
+    match File::create(path) {
+        Ok(f) => f,
+        Err(err) => error!("failed to create `{}`: {}", path.display(), err),
+    }
+}
+
+fn write_file(path: &Path, content: &[u8]) {
+    let mut file = create_file(path);
+    match file.write_all(content) {
+        Ok(()) => (),
+        Err(err) => error!("failed to write to `{}`: {}", path.display(), err),
+    }
 }
 
 fn checkout(repo: &Repository, commit: &Commit) {
