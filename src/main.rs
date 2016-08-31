@@ -5,10 +5,11 @@ extern crate rustc_serialize;
 extern crate progress;
 
 use docopt::Docopt;
-use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status, STATUS_IGNORED};
+use git2::{Commit, Error as Git2Error, ErrorCode, Object, Oid, Repository, Status, STATUS_IGNORED};
 use git2::build::CheckoutBuilder;
 use progress::Bar;
 use regex::Regex;
+use std::collections::HashSet;
 use std::env;
 use std::fs::{self, File};
 use std::io;
@@ -123,8 +124,6 @@ fn main() {
     let commits_dir = work_dir.join("commits");
     make_dir(&commits_dir);
 
-    println!("incr_dir: {}", incr_dir.display());
-
     let cargo_dir = match Path::new(&args.flag_cargo).parent() {
         Some(p) => p,
         None => error!("Cargo.toml path has no parent: {}", args.flag_cargo),
@@ -203,7 +202,9 @@ fn main() {
     println!("- {} commits built", commits.len());
     println!("- normal compilation took {:.2}s", stats[0].build_time);
     println!("- incremental compilation took {:.2}s", stats[1].build_time);
-    println!("- {} total tests executed ({} of those passed)", tests_total, tests_passed);
+    println!("- {} total tests executed ({} of those passed)",
+             tests_total,
+             tests_passed);
     println!("- normal/incremental ratio {:.2}",
              stats[0].build_time / stats[1].build_time);
     println!("- {} of {} (or {:.0}%) modules were re-used",
@@ -326,7 +327,7 @@ struct TestResult {
     results: Vec<TestCaseResult>,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct TestCaseResult {
     test_name: String,
     status: String,
@@ -457,7 +458,7 @@ fn cargo_test(cargo_dir: &Path,
     let all_output = into_string(all_bytes);
 
     let test_regex = Regex::new(r"(?m)^test (.*) ... (\w+)").unwrap();
-    let test_results: Vec<_> = test_regex.captures_iter(&all_output)
+    let mut test_results: Vec<_> = test_regex.captures_iter(&all_output)
         .map(|captures| {
             TestCaseResult {
                 test_name: captures.at(1).unwrap().to_string(),
@@ -465,6 +466,8 @@ fn cargo_test(cargo_dir: &Path,
             }
         })
         .collect();
+
+    test_results.sort();
 
     TestResult {
         success: output.status.success(),
@@ -555,23 +558,98 @@ fn commit_or_error<'obj, 'repo>(obj: Object<'repo>) -> Commit<'repo> {
     }
 }
 
+/// Given a start and end point, returns a linear series of commits to traverse.
+/// The correct ordering here is not always clear; we adopt reverse-post-order,
+/// which yields "reasonable" results.
+///
+/// Example:
+///
+///    A
+///    |\
+///    B C
+///    |/
+///    D
+///
+/// Here you have two branches (B and C) that were active in parallel from a common
+/// starting point D. RPO will yield D, B, C, A (or D, C, B, A) which seems ok.
+///
+/// Some complications:
+///
+/// - The `start` point may not be the common ancestor we need. e.g.,
+///   in the above graph, what should we do if the start point is B
+///   and end point is A? What we do is to yield B, C, A. We do this
+///   by excluding all nodes that are reachable from the start
+///   point. The reason for this is that if you test
+///   `master~3..master` and then `master~10..master~3` you will
+///   basically test all commits which landed into master at various
+///   points.  If we omitted things that could not reach `start`
+///   (e.g., walking only B, A in in our example) then we might just
+///   miss commit C altogether.
 fn find_path<'obj, 'repo>(start: Commit<'repo>, end: Commit<'repo>) -> Vec<Commit<'repo>> {
-    let mut commits = vec![end];
-    while commits.last().unwrap().id() != start.id() {
-        match commits.last().unwrap().parent(0) {
-            Ok(p) => commits.push(p),
-            Err(_) => break,
-        }
-    }
+    let start_id = start.id();
 
-    // if we get here, never found the parent
-    if commits.last().unwrap().id() != start.id() {
-        error!("could not find path from {} to {}",
-               short_id(start.as_object()),
-               short_id(commits.first().unwrap().as_object()));
-    }
+    // Collect all nodes reachable from the start.
+    let reachable_from_start = walk(start, |_| true, |_| ());
 
+    // Walk backwards from end; stop when we reach any thing reachable
+    // from start (except for start itself, walk that). Accumulate
+    // completed notes into `commits`.
+    let mut commits = vec![];
+    walk(end,
+         |c| c.id() == start_id || !reachable_from_start.contains(&c.id()),
+         |c| commits.push(c));
+
+    // `commits` is now post-order; reverse it, and return.
     commits.reverse();
 
-    return commits;
+    commits
+}
+
+fn walk<'repo, PRE, POST>(start: Commit<'repo>, mut check: PRE, mut complete: POST) -> HashSet<Oid>
+    where PRE: FnMut(&Commit<'repo>) -> bool,
+          POST: FnMut(Commit<'repo>)
+{
+    let mut visited = HashSet::new();
+    let mut stack = vec![DfsFrame::new(start)];
+    while let Some(mut frame) = stack.pop() {
+        let next_parent = frame.next_parent;
+        if next_parent == frame.num_parents {
+            complete(frame.commit);
+        } else {
+            let commit = match frame.commit.parent(next_parent) {
+                Ok(p) => p,
+                Err(err) => {
+                    error!("unable to load parent {} of commit {}: {}",
+                           next_parent,
+                           short_id(&frame.commit),
+                           err)
+                }
+            };
+            frame.next_parent += 1;
+            stack.push(frame);
+            if visited.insert(commit.id()) {
+                if check(&commit) {
+                    stack.push(DfsFrame::new(commit));
+                }
+            }
+        }
+    }
+    visited
+}
+
+struct DfsFrame<'repo> {
+    commit: Commit<'repo>,
+    next_parent: usize,
+    num_parents: usize,
+}
+
+impl<'repo> DfsFrame<'repo> {
+    fn new(commit: Commit<'repo>) -> Self {
+        let num_parents = commit.parents().len();
+        DfsFrame {
+            commit: commit,
+            next_parent: 0,
+            num_parents: num_parents,
+        }
+    }
 }
