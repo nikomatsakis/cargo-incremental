@@ -18,8 +18,8 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 
 const USAGE: &'static str = "
-Usage: cargo-fuzz-incr-git [options]
-       cargo-fuzz-incr-git --help
+Usage: cargo-fozzy [options]
+       cargo-fozzy --help
 
 This will run a fuzzing operation where it checks out various
 revisions of your project and tries to build and test them both
@@ -142,6 +142,7 @@ fn main() {
         bar.reach_percent(percentage as i32);
     };
     let mut stats = vec![CompilationStats::default(), CompilationStats::default()];
+    let (mut tests_total, mut tests_passed) = (0, 0);
     for (index, commit) in commits.iter().enumerate() {
         let short_id = short_id(commit);
 
@@ -191,6 +192,9 @@ fn main() {
         if normal_test != incr_test {
             error!("incremental tests differed from normal tests")
         }
+
+        tests_passed += normal_test.results.iter().filter(|t| t.status == "ok").count();
+        tests_total += normal_test.results.len();
     }
 
     assert!(stats[0].modules_reused == 0, "normal build reused modules");
@@ -199,12 +203,15 @@ fn main() {
     println!("- {} commits built", commits.len());
     println!("- normal compilation took {:.2}s", stats[0].build_time);
     println!("- incremental compilation took {:.2}s", stats[1].build_time);
+    println!("- {} total tests executed ({} of those passed)", tests_total, tests_passed);
     println!("- normal/incremental ratio {:.2}",
              stats[0].build_time / stats[1].build_time);
     println!("- {} of {} (or {:.0}%) modules were re-used",
              stats[1].modules_reused,
              stats[1].modules_total,
              (stats[1].modules_reused as f64 / stats[1].modules_total as f64) * 100.0);
+    println!("");
+    println!("Wokka, wokka!");
 }
 
 #[derive(Default)]
