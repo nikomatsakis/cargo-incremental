@@ -19,8 +19,8 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 
 const USAGE: &'static str = "
-Usage: cargo-fozzy [options]
-       cargo-fozzy --help
+Usage: cargo-incremental [options]
+       cargo-incremental --help
 
 This will run a fuzzing operation where it checks out various
 revisions of your project and tries to build and test them both
