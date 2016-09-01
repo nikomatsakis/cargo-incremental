@@ -82,30 +82,37 @@ fn main() {
 
     check_clean(repo);
 
-    let revisions = match repo.revparse(&args.flag_revisions) {
-        Ok(revspec) => revspec,
-        Err(err) => error!("failed to parse revspec `{}`: {}", args.flag_revisions, err),
-    };
+    let (from_commit, to_commit);
+    if args.flag_revisions.contains("..") {
+        let revisions = match repo.revparse(&args.flag_revisions) {
+            Ok(revspec) => revspec,
+            Err(err) => error!("failed to parse revspec `{}`: {}", args.flag_revisions, err),
+        };
 
-    let from_object = match revisions.from() {
-        Some(object) => object,
-        None => {
-            error!("revspec `{}` had no \"from\" point specified",
-                   args.flag_revisions)
-        }
-    };
 
-    let to_object = match revisions.to() {
-        Some(object) => object,
-        None => {
-            error!("revspec `{}` had no \"to\" point specified; try something like `{}..HEAD`",
-                   args.flag_revisions,
-                   args.flag_revisions)
-        }
-    };
+        from_commit = match revisions.from() {
+            Some(object) => Some(commit_or_error(object.clone())),
+            None => {
+                error!("revspec `{}` had no \"from\" point specified",
+                       args.flag_revisions)
+            }
+        };
 
-    let from_commit = commit_or_error(from_object.clone());
-    let to_commit = commit_or_error(to_object.clone());
+        to_commit = match revisions.to() {
+            Some(object) => commit_or_error(object.clone()),
+            None => {
+                error!("revspec `{}` had no \"to\" point specified; try something like `{}..HEAD`",
+                       args.flag_revisions,
+                       args.flag_revisions)
+            }
+        };
+    } else {
+        from_commit = None;
+        to_commit = match repo.revparse_single(&args.flag_revisions) {
+            Ok(revspec) => commit_or_error(revspec),
+            Err(err) => error!("failed to parse revspec `{}`: {}", args.flag_revisions, err),
+        };
+    }
 
     let commits = find_path(from_commit, to_commit);
 
@@ -401,7 +408,16 @@ fn cargo_build(cargo_dir: &Path,
 
         build_time = Some(f64::from_str(captures.at(1).unwrap()).unwrap());
     }
-    stats.build_time += build_time.unwrap_or_else(|| error!("cargo did not report build time"));
+    stats.build_time += match build_time {
+        Some(v) => v,
+        None => {
+            // if cargo errors out, it sometimes does not report a build time
+            if output.status.success(){
+                error!("cargo build did not fail but failed to report total build time");
+            }
+            0.0
+        }
+    };
 
     let message_regex = Regex::new("(?m)(warning|error): (.*)\n  --> ([^:]:\\d+:\\d+)$").unwrap();
     let messages = message_regex.captures_iter(&all_output)
@@ -585,18 +601,22 @@ fn commit_or_error<'obj, 'repo>(obj: Object<'repo>) -> Commit<'repo> {
 ///   points.  If we omitted things that could not reach `start`
 ///   (e.g., walking only B, A in in our example) then we might just
 ///   miss commit C altogether.
-fn find_path<'obj, 'repo>(start: Commit<'repo>, end: Commit<'repo>) -> Vec<Commit<'repo>> {
-    let start_id = start.id();
+fn find_path<'obj, 'repo>(start: Option<Commit<'repo>>, end: Commit<'repo>) -> Vec<Commit<'repo>> {
+    let start_id = start.as_ref().map(|c| c.id());
 
     // Collect all nodes reachable from the start.
-    let reachable_from_start = walk(start, |_| true, |_| ());
+    let mut reachable_from_start = start.map(|c| walk(c, |_| true, |_| ()))
+                                        .unwrap_or(HashSet::new());
+    if let Some(start_id) = start_id {
+        reachable_from_start.remove(&start_id);
+    }
 
     // Walk backwards from end; stop when we reach any thing reachable
     // from start (except for start itself, walk that). Accumulate
     // completed notes into `commits`.
     let mut commits = vec![];
     walk(end,
-         |c| c.id() == start_id || !reachable_from_start.contains(&c.id()),
+         |c| !reachable_from_start.contains(&c.id()),
          |c| commits.push(c));
 
     // `commits` is now post-order; reverse it, and return.
