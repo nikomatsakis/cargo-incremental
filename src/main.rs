@@ -247,8 +247,6 @@ fn main() {
              stats[1].modules_reused,
              stats[1].modules_total,
              (stats[1].modules_reused as f64 / stats[1].modules_total as f64) * 100.0);
-    println!("");
-    println!("Wokka, wokka!");
 }
 
 #[derive(Default)]
