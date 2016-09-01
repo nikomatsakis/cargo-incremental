@@ -19,13 +19,32 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 
 const USAGE: &'static str = "
-Usage: cargo-incremental [options]
+Usage: cargo-incremental build [--verify] <arguments>...
+       cargo-incremental replay [options] <branch-name>
        cargo-incremental --help
 
-This will run a fuzzing operation where it checks out various
-revisions of your project and tries to build and test them both
-incrementally and normally.  We will check that the results are the
-same and also track how much reuse is achieved.
+This is a tool for testing incremental compilation. It offers two main
+modes:
+
+## Build mode
+
+`cargo incremental build` will run an incremental build. In case of
+problems, it will silently create a branch in your current git
+repository called `cargo-incremental-build`. Each time that you build,
+a commit is added to this branch with the current state of your
+working directory. This way, if you encounter a problem, we can easily
+replay the steps that led to the bug.
+
+## Replay mode
+
+This mode will walk back through a linearization of your git history.
+At each step, it will compile both incrementally and normally and also
+run tests. It checks that both versions of the compiler execute in the
+same way, and reports an error if that is not the case.
+
+This can be used to try and reproduce a failure that occurred with
+`cargo incremental build`, but it can also be used just as a general
+purpose tester.
 
 To do this, a temporary `work` directory is needed (specified by
 `--work-dir`).  Note that this directory is **completely deleted**
@@ -39,10 +58,14 @@ Options:
     --just-current     track just the current projection incrementally, not all deps
 ";
 
+#[allow(dead_code)] // for now
 #[derive(RustcDecodable)]
 struct Args {
+    cmd_build: bool,
+    cmd_replay: bool,
+    arg_arguments: Vec<String>,
     flag_cargo: String,
-    flag_revisions: String,
+    arg_branch_name: String,
     flag_work_dir: String,
     flag_just_current: bool,
 }
@@ -64,6 +87,12 @@ fn main() {
         .and_then(|d| d.argv(env::args().into_iter()).decode())
         .unwrap_or_else(|e| e.exit());
 
+    if args.cmd_build {
+        error!("build mode not implemented yet");
+    }
+
+    assert!(args.cmd_replay);
+
     let cargo_toml_path = Path::new(&args.flag_cargo);
 
     if !cargo_toml_path.exists() || !cargo_toml_path.is_file() {
@@ -83,10 +112,10 @@ fn main() {
     check_clean(repo);
 
     let (from_commit, to_commit);
-    if args.flag_revisions.contains("..") {
-        let revisions = match repo.revparse(&args.flag_revisions) {
+    if args.arg_branch_name.contains("..") {
+        let revisions = match repo.revparse(&args.arg_branch_name) {
             Ok(revspec) => revspec,
-            Err(err) => error!("failed to parse revspec `{}`: {}", args.flag_revisions, err),
+            Err(err) => error!("failed to parse revspec `{}`: {}", args.arg_branch_name, err),
         };
 
 
@@ -94,7 +123,7 @@ fn main() {
             Some(object) => Some(commit_or_error(object.clone())),
             None => {
                 error!("revspec `{}` had no \"from\" point specified",
-                       args.flag_revisions)
+                       args.arg_branch_name)
             }
         };
 
@@ -102,15 +131,15 @@ fn main() {
             Some(object) => commit_or_error(object.clone()),
             None => {
                 error!("revspec `{}` had no \"to\" point specified; try something like `{}..HEAD`",
-                       args.flag_revisions,
-                       args.flag_revisions)
+                       args.arg_branch_name,
+                       args.arg_branch_name)
             }
         };
     } else {
         from_commit = None;
-        to_commit = match repo.revparse_single(&args.flag_revisions) {
+        to_commit = match repo.revparse_single(&args.arg_branch_name) {
             Ok(revspec) => commit_or_error(revspec),
-            Err(err) => error!("failed to parse revspec `{}`: {}", args.flag_revisions, err),
+            Err(err) => error!("failed to parse revspec `{}`: {}", args.arg_branch_name, err),
         };
     }
 
@@ -266,7 +295,7 @@ fn open_repo(cargo_path: &Path) -> Result<Repository, Git2Error> {
     loop {
         if git_path.is_dir() {
             match Repository::open(git_path) {
-                Ok(r) => return Ok(r),
+                Ok(r) => {println!("repo at {}", git_path.display()); return Ok(r) }
                 Err(err) => {
                     match err.code() {
                         ErrorCode::NotFound => {}
