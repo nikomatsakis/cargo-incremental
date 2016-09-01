@@ -9,7 +9,7 @@ use std::env;
 use std::io::prelude::*;
 
 const USAGE: &'static str = "
-Usage: cargo-incremental build [--verify] <arguments>...
+Usage: cargo-incremental build <arguments>...
        cargo-incremental replay [options] <branch-name>
        cargo-incremental --help
 
