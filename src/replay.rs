@@ -345,7 +345,7 @@ fn cargo_test(cargo_dir: &Path,
         .collect();
     let all_output = into_string(all_bytes);
 
-    let test_regex = Regex::new(r"(?m)^test (.*) ... (\w+)").unwrap();
+    let test_regex = Regex::new(r"(?m)^test (.*) \.\.\. (\w+)").unwrap();
     let mut test_results: Vec<_> = test_regex.captures_iter(&all_output)
         .map(|captures| {
             TestCaseResult {
