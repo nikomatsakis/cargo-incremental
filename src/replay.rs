@@ -357,6 +357,18 @@ fn cargo_test(cargo_dir: &Path,
 
     test_results.sort();
 
+    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; \d+ ignored; \d+ measured$")
+        .unwrap();
+
+    let nb_tests_summary = summary_regex.captures_iter(&all_output)
+        .fold(0, |acc, captures| acc + captures.at(1).unwrap().parse::<usize>().unwrap() +
+            captures.at(2).unwrap().parse::<usize>().unwrap());
+
+    if nb_tests_summary != test_results.len() {
+        error!("matched a different number of tests ({}) than in the summary ({})",
+            test_results.len(), nb_tests_summary);
+    }
+
     TestResult {
         success: output.status.success(),
         results: test_results,
