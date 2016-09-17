@@ -6,10 +6,9 @@ extern crate progress;
 
 use docopt::Docopt;
 use std::env;
-use std::io::prelude::*;
 
 const USAGE: &'static str = "
-Usage: cargo-incremental build <arguments>...
+Usage: cargo-incremental build [options]
        cargo-incremental replay [options] <branch-name>
        cargo-incremental --help
 
@@ -48,7 +47,8 @@ Options:
     --just-current     track just the current projection incrementally, not all deps
 ";
 
-#[allow(dead_code)] // for now
+// dead code allowed for now
+#[allow(dead_code)]
 #[derive(RustcDecodable)]
 pub struct Args {
     cmd_build: bool,
@@ -78,12 +78,13 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
 
     if args.cmd_build {
-        error!("build mode not implemented yet");
+        build::build(&args);
     } else if args.cmd_replay {
         replay::replay(&args);
     }
 }
 
+mod build;
 mod dfs;
 mod replay;
 mod util;
