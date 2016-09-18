@@ -2,7 +2,7 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::io;
 
-use git2::{Commit, Repository, Signature, STATUS_WT_NEW};
+use git2::{BranchType, Commit, Reference, Repository, Signature, STATUS_WT_NEW};
 
 use super::Args;
 use super::util;
@@ -39,6 +39,18 @@ fn check_untracked_rs_files(repo: &Repository) {
     }
 }
 
+fn create_branch_if_new(repo: &Repository, name: &str, head: &Reference) {
+    if let Ok(_) = repo.find_branch(name, BranchType::Local) {
+        return;
+    }
+
+    println!("creating branch 'cargo-incremental-build'");
+    let commit = repo.find_commit(head.target().unwrap()).unwrap();
+    if let Err(e) = repo.branch(name, &commit, false) {
+        error!("failed to create branch '{}': {}", name, e);
+    }
+}
+
 fn commit_checkpoint(repo: &Repository) {
     let author = match Signature::now("cargo-incremental", "none") {
         Ok(author) => author,
@@ -52,6 +64,8 @@ fn commit_checkpoint(repo: &Repository) {
 
     let mut pathspecs = Vec::new();
     pathspecs.push("*");
+    let pathspecs = pathspecs;
+
     if let Err(e) = index.update_all(pathspecs, None) {
         error!("{}", e);
     }
@@ -103,7 +117,7 @@ pub fn build(args: &Args) {
                cargo_toml_path.display());
     }
 
-    let ref repo = match util::open_repo(cargo_toml_path) {
+    let repo = &match util::open_repo(cargo_toml_path) {
         Ok(repo) => repo,
         Err(e) => {
             error!("failed to find repository containing `{}`: {}",
@@ -121,8 +135,10 @@ pub fn build(args: &Args) {
     let current_head = repo.head().unwrap();
     println!("head is: {:?}", current_head.shorthand().unwrap());
 
-    // Checkout the branch "cargo-incremental-build".
-    // TODO: Create the branch if it does not already exist.
+
+    // Checkout the branch "cargo-incremental-build", create it if it does not already
+    // exist.
+    create_branch_if_new(repo, "cargo-incremental-build", &current_head);
     reset_branch(repo, "refs/heads/cargo-incremental-build");
 
     // Commit a checkpoint.
@@ -136,17 +152,31 @@ pub fn build(args: &Args) {
     let incr_dir = Path::new("build-cache");
 
     let incr_options = if args.flag_just_current {
-        IncrementalOptions::CurrentProject(&incr_dir)
+        IncrementalOptions::CurrentProject(incr_dir)
     } else {
-        IncrementalOptions::AllDeps(&incr_dir)
+        IncrementalOptions::AllDeps(incr_dir)
     };
 
     println!("Building..");
     let mut stats = CompilationStats::default();
-    cargo_build(&repo_dir,
-                &repo_dir,
-                Path::new("target"),
-                incr_options,
-                &mut stats,
-                false);
+    let build_result = cargo_build(repo_dir,
+                                   repo_dir,
+                                   Path::new("target"),
+                                   incr_options,
+                                   &mut stats,
+                                   false);
+
+    for m in build_result.messages {
+        println!("{}", m.message);
+    }
+
+    let build_reuse  = match stats.modules_total as f32 {
+        0.0 => 100.0,
+        n => stats.modules_reused as f32 / n * 100.0,
+    };
+
+    println!("Modules reused: {} Total: {} Build reuse: {}%",
+             stats.modules_reused,
+             stats.modules_total,
+             build_reuse);
 }

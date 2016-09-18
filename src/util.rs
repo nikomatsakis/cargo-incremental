@@ -253,6 +253,7 @@ pub fn cargo_build(cargo_dir: &Path,
             if should_save_output {
                 save_output(commit_dir, &output);
             }
+
             output
         }
         Err(err) => error!("failed to execute `cargo build`: {}", err),
@@ -265,6 +266,10 @@ pub fn cargo_build(cargo_dir: &Path,
         .chain(output.stderr.iter().cloned())
         .collect();
     let all_output = into_string(all_bytes);
+
+    if !should_save_output {
+        println!("{}", all_output);
+    }
 
     let reusing_regex = Regex::new(r"(?m)^incremental: re-using (\d+) out of (\d+) modules$")
         .unwrap();
