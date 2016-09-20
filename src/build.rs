@@ -110,12 +110,8 @@ fn commit_checkpoint(repo: &Repository) {
 pub fn build(args: &Args) {
     assert!(args.cmd_build);
 
-    let cargo_toml_path = Path::new(&args.flag_cargo);
-
-    if !cargo_toml_path.exists() || !cargo_toml_path.is_file() {
-        error!("cargo path `{}` does not lead to a `Cargo.toml` file",
-               cargo_toml_path.display());
-    }
+    let cargo_toml_pathbuf = Path::new(&args.flag_cargo).canonicalize().unwrap();
+    let cargo_toml_path = cargo_toml_pathbuf.as_path();
 
     let repo = &match util::open_repo(cargo_toml_path) {
         Ok(repo) => repo,
@@ -170,7 +166,7 @@ pub fn build(args: &Args) {
         println!("{}", m.message);
     }
 
-    let build_reuse  = match stats.modules_total as f32 {
+    let build_reuse = match stats.modules_total as f32 {
         0.0 => 100.0,
         n => stats.modules_reused as f32 / n * 100.0,
     };
