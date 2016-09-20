@@ -23,6 +23,9 @@ pub fn replay(args: &Args) {
                cargo_toml_path.display());
     }
 
+    let cargo_toml_pathref = cargo_toml_path.canonicalize().unwrap();
+    let cargo_toml_path = cargo_toml_pathref.as_path();
+
     let ref repo = match util::open_repo(cargo_toml_path) {
         Ok(repo) => repo,
         Err(e) => {
@@ -83,7 +86,7 @@ pub fn replay(args: &Args) {
     let commits_dir = work_dir.join("commits");
     util::make_dir(&commits_dir);
 
-    let cargo_dir = match Path::new(&args.flag_cargo).parent() {
+    let cargo_dir = match cargo_toml_path.parent() {
         Some(p) => p,
         None => error!("Cargo.toml path has no parent: {}", args.flag_cargo),
     };
