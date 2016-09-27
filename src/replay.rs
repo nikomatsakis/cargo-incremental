@@ -1,17 +1,15 @@
-use git2::{Commit, Repository};
-use git2::build::CheckoutBuilder;
 use progress::Bar;
 use regex::Regex;
 use std::env;
-use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-use std::process::{Command, Output};
-use std::str::FromStr;
+use std::process::Command;
 
 use super::Args;
 use super::dfs;
 use super::util;
+use super::util::{cargo_build, save_output, CompilationStats, IncrementalOptions, TestResult,
+                  TestCaseResult};
 
 pub fn replay(args: &Args) {
     assert!(args.cmd_replay);
@@ -41,7 +39,11 @@ pub fn replay(args: &Args) {
     if args.arg_branch_name.contains("..") {
         let revisions = match repo.revparse(&args.arg_branch_name) {
             Ok(revspec) => revspec,
-            Err(err) => error!("failed to parse revspec `{}`: {}", args.arg_branch_name, err),
+            Err(err) => {
+                error!("failed to parse revspec `{}`: {}",
+                       args.arg_branch_name,
+                       err)
+            }
         };
 
 
@@ -65,7 +67,11 @@ pub fn replay(args: &Args) {
         from_commit = None;
         to_commit = match repo.revparse_single(&args.arg_branch_name) {
             Ok(revspec) => util::commit_or_error(revspec),
-            Err(err) => error!("failed to parse revspec `{}`: {}", args.arg_branch_name, err),
+            Err(err) => {
+                error!("failed to parse revspec `{}`: {}",
+                       args.arg_branch_name,
+                       err)
+            }
         };
     }
 
@@ -108,7 +114,7 @@ pub fn replay(args: &Args) {
         let short_id = util::short_id(commit);
 
         update_percent(index, &short_id, 0);
-        checkout(repo, commit);
+        util::checkout(repo, commit);
 
         update_percent(index, &short_id, 1);
         let commit_dir = commits_dir.join(format!("{:04}-{}-normal-build", index, short_id));
@@ -117,7 +123,8 @@ pub fn replay(args: &Args) {
                                           &commit_dir,
                                           &target_normal_dir,
                                           IncrementalOptions::None,
-                                          &mut stats[0]);
+                                          &mut stats[0],
+                                          true);
 
         update_percent(index, &short_id, 2);
         let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
@@ -139,7 +146,8 @@ pub fn replay(args: &Args) {
                                         &commit_dir,
                                         &target_incr_dir,
                                         incr_options,
-                                        &mut stats[1]);
+                                        &mut stats[1],
+                                        true);
 
         update_percent(index, &short_id, 4);
         let commit_dir = commits_dir.join(format!("{:04}-{}-incr-test", index, short_id));
@@ -176,141 +184,6 @@ pub fn replay(args: &Args) {
 }
 
 
-#[derive(Default)]
-struct CompilationStats {
-    build_time: f64, // in seconds
-    modules_reused: u64,
-    modules_total: u64,
-}
-
-#[derive(Copy, Clone, Debug)]
-enum IncrementalOptions<'p> {
-    None,
-    AllDeps(&'p Path),
-    CurrentProject(&'p Path),
-}
-
-#[derive(PartialEq, Eq, Debug)]
-struct BuildResult {
-    success: bool,
-    messages: Vec<Message>,
-}
-
-#[derive(PartialEq, Eq, Debug)]
-struct Message {
-    kind: String,
-    message: String,
-    location: String,
-}
-
-#[derive(PartialEq, Eq, Debug)]
-struct TestResult {
-    success: bool,
-    results: Vec<TestCaseResult>,
-}
-
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
-struct TestCaseResult {
-    test_name: String,
-    status: String,
-}
-
-fn cargo_build(cargo_dir: &Path,
-               commit_dir: &Path,
-               target_dir: &Path,
-               incremental: IncrementalOptions,
-               stats: &mut CompilationStats)
-               -> BuildResult {
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(&cargo_dir);
-    cmd.env("CARGO_TARGET_DIR", target_dir);
-    match incremental {
-        IncrementalOptions::None => {
-            cmd.arg("build").arg("-v");
-        }
-        IncrementalOptions::AllDeps(incr_dir) => {
-            let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
-            cmd.arg("build")
-                .arg("-v")
-                .env("RUSTFLAGS",
-                     format!("-Z incremental={} -Z incremental-info {}",
-                             incr_dir.display(),
-                             rustflags));
-        }
-        IncrementalOptions::CurrentProject(incr_dir) => {
-            cmd.arg("rustc")
-                .arg("-v")
-                .arg("--")
-                .arg("-Z")
-                .arg(format!("incremental={}", incr_dir.display()))
-                .arg("-Z")
-                .arg("incremental-info");
-        }
-    }
-    let output = cmd.output();
-    let output = match output {
-        Ok(output) => {
-            save_output(commit_dir, &output);
-            output
-        }
-        Err(err) => error!("failed to execute `cargo build`: {}", err),
-    };
-
-    // compute how much re-use we are getting
-    let all_bytes: Vec<u8> = output.stdout
-        .iter()
-        .cloned()
-        .chain(output.stderr.iter().cloned())
-        .collect();
-    let all_output = into_string(all_bytes);
-
-    let reusing_regex = Regex::new(r"(?m)^incremental: re-using (\d+) out of (\d+) modules$")
-        .unwrap();
-    for captures in reusing_regex.captures_iter(&all_output) {
-        let reused = u64::from_str(captures.at(1).unwrap()).unwrap();
-        let total = u64::from_str(captures.at(2).unwrap()).unwrap();
-        stats.modules_reused += reused;
-        stats.modules_total += total;
-    }
-
-    let build_time_regex = Regex::new(r"(?m)^\s*Finished .* target\(s\) in ([0-9.]+) secs$")
-        .unwrap();
-    let mut build_time = None;
-    for captures in build_time_regex.captures_iter(&all_output) {
-        if build_time.is_some() {
-            error!("cargo reported total build time twice");
-        }
-
-        build_time = Some(f64::from_str(captures.at(1).unwrap()).unwrap());
-    }
-    stats.build_time += match build_time {
-        Some(v) => v,
-        None => {
-            // if cargo errors out, it sometimes does not report a build time
-            if output.status.success(){
-                error!("cargo build did not fail but failed to report total build time");
-            }
-            0.0
-        }
-    };
-
-    let message_regex = Regex::new("(?m)(warning|error): (.*)\n  --> ([^:]:\\d+:\\d+)$").unwrap();
-    let messages = message_regex.captures_iter(&all_output)
-        .map(|captures| {
-            Message {
-                kind: captures.at(1).unwrap().to_string(),
-                message: captures.at(2).unwrap().to_string(),
-                location: captures.at(3).unwrap().to_string(),
-            }
-        })
-        .collect();
-
-    BuildResult {
-        success: output.status.success(),
-        messages: messages,
-    }
-}
-
 fn cargo_test(cargo_dir: &Path,
               commit_dir: &Path,
               target_dir: &Path,
@@ -346,7 +219,7 @@ fn cargo_test(cargo_dir: &Path,
         .cloned()
         .chain(output.stderr.iter().cloned())
         .collect();
-    let all_output = into_string(all_bytes);
+    let all_output = util::into_string(all_bytes);
 
     let test_regex = Regex::new(r"(?m)^test (.*) \.\.\. (\w+)").unwrap();
     let mut test_results: Vec<_> = test_regex.captures_iter(&all_output)
@@ -364,12 +237,15 @@ fn cargo_test(cargo_dir: &Path,
         .unwrap();
 
     let nb_tests_summary = summary_regex.captures_iter(&all_output)
-        .fold(0, |acc, captures| acc + captures.at(1).unwrap().parse::<usize>().unwrap() +
-            captures.at(2).unwrap().parse::<usize>().unwrap());
+        .fold(0, |acc, captures| {
+            acc + captures.at(1).unwrap().parse::<usize>().unwrap() +
+            captures.at(2).unwrap().parse::<usize>().unwrap()
+        });
 
     if nb_tests_summary != test_results.len() {
         error!("matched a different number of tests ({}) than in the summary ({})",
-            test_results.len(), nb_tests_summary);
+               test_results.len(),
+               nb_tests_summary);
     }
 
     TestResult {
@@ -377,54 +253,3 @@ fn cargo_test(cargo_dir: &Path,
         results: test_results,
     }
 }
-
-fn into_string(bytes: Vec<u8>) -> String {
-    match String::from_utf8(bytes) {
-        Ok(v) => v,
-        Err(_) => error!("unable to parse output as utf-8"),
-    }
-}
-
-fn save_output(output_dir: &Path, output: &Output) {
-    write_file(&output_dir.join("status"),
-               format!("{}", output.status).as_bytes());
-    write_file(&output_dir.join("stdout"), &output.stdout);
-    write_file(&output_dir.join("stderr"), &output.stderr);
-}
-
-fn create_file(path: &Path) -> File {
-    match File::create(path) {
-        Ok(f) => f,
-        Err(err) => error!("failed to create `{}`: {}", path.display(), err),
-    }
-}
-
-fn write_file(path: &Path, content: &[u8]) {
-    let mut file = create_file(path);
-    match file.write_all(content) {
-        Ok(()) => (),
-        Err(err) => error!("failed to write to `{}`: {}", path.display(), err),
-    }
-}
-
-fn checkout(repo: &Repository, commit: &Commit) {
-    let mut cb = CheckoutBuilder::new();
-    match repo.checkout_tree(commit.as_object(), Some(&mut cb)) {
-        Ok(()) => {}
-        Err(err) => {
-            error!("encountered error checking out `{}`: {}",
-                   util::short_id(commit),
-                   err)
-        }
-    }
-
-    match repo.set_head_detached(commit.id()) {
-        Ok(()) => {}
-        Err(err) => {
-            error!("encountered error adjusting head to `{}`: {}",
-                   util::short_id(commit),
-                   err)
-        }
-    }
-}
-
