@@ -8,6 +8,76 @@ use super::Args;
 use super::util;
 use super::util::{cargo_build, CompilationStats, IncrementalOptions};
 
+pub fn build(args: &Args) {
+    assert!(args.cmd_build);
+
+    let cargo_toml_pathbuf = Path::new(&args.flag_cargo).canonicalize().unwrap();
+    let cargo_toml_path = cargo_toml_pathbuf.as_path();
+
+    let repo = &match util::open_repo(cargo_toml_path) {
+        Ok(repo) => repo,
+        Err(e) => {
+            error!("failed to find repository containing `{}`: {}",
+                   cargo_toml_path.display(),
+                   e)
+        }
+    };
+
+    let repo_dir = cargo_toml_path.parent().unwrap();
+
+    // Check that there are no are untracked .rs files that might affect the build.
+    check_untracked_rs_files(repo);
+
+    // Save the current head.
+    let current_head = repo.head().unwrap();
+    println!("head is: {:?}", current_head.shorthand().unwrap());
+
+
+    // Checkout the branch "cargo-incremental-build", create it if it does not already
+    // exist.
+    create_branch_if_new(repo, "cargo-incremental-build", &current_head);
+    reset_branch(repo, "refs/heads/cargo-incremental-build");
+
+    // Commit a checkpoint.
+    println!("committing checkpoint");
+    commit_checkpoint(repo);
+
+    // Reset back to the initial head.
+    println!("bringing head back to initial state");
+    reset_branch(repo, current_head.name().unwrap());
+
+    let incr_dir = Path::new("build-cache");
+
+    let incr_options = if args.flag_just_current {
+        IncrementalOptions::CurrentProject(incr_dir)
+    } else {
+        IncrementalOptions::AllDeps(incr_dir)
+    };
+
+    println!("Building..");
+    let mut stats = CompilationStats::default();
+    let build_result = cargo_build(repo_dir,
+                                   repo_dir,
+                                   Path::new("target"),
+                                   incr_options,
+                                   &mut stats,
+                                   false);
+
+    for m in build_result.messages {
+        println!("{}", m.message);
+    }
+
+    let build_reuse = match stats.modules_total as f32 {
+        0.0 => 100.0,
+        n => stats.modules_reused as f32 / n * 100.0,
+    };
+
+    println!("Modules reused: {} Total: {} Build reuse: {}%",
+             stats.modules_reused,
+             stats.modules_total,
+             build_reuse);
+}
+
 fn reset_branch(repo: &Repository, branch: &str) {
     match repo.set_head(branch) {
         Ok(()) => {}
@@ -105,74 +175,4 @@ fn commit_checkpoint(repo: &Repository) {
         Ok(oid) => println!("Commit: {:?}", oid),
         Err(e) => error!("Failed to create commit: {}", e),
     };
-}
-
-pub fn build(args: &Args) {
-    assert!(args.cmd_build);
-
-    let cargo_toml_pathbuf = Path::new(&args.flag_cargo).canonicalize().unwrap();
-    let cargo_toml_path = cargo_toml_pathbuf.as_path();
-
-    let repo = &match util::open_repo(cargo_toml_path) {
-        Ok(repo) => repo,
-        Err(e) => {
-            error!("failed to find repository containing `{}`: {}",
-                   cargo_toml_path.display(),
-                   e)
-        }
-    };
-
-    let repo_dir = cargo_toml_path.parent().unwrap();
-
-    // Check that there are no are untracked .rs files that might affect the build.
-    check_untracked_rs_files(repo);
-
-    // Save the current head.
-    let current_head = repo.head().unwrap();
-    println!("head is: {:?}", current_head.shorthand().unwrap());
-
-
-    // Checkout the branch "cargo-incremental-build", create it if it does not already
-    // exist.
-    create_branch_if_new(repo, "cargo-incremental-build", &current_head);
-    reset_branch(repo, "refs/heads/cargo-incremental-build");
-
-    // Commit a checkpoint.
-    println!("committing checkpoint");
-    commit_checkpoint(repo);
-
-    // Reset back to the initial head.
-    println!("bringing head back to initial state");
-    reset_branch(repo, current_head.name().unwrap());
-
-    let incr_dir = Path::new("build-cache");
-
-    let incr_options = if args.flag_just_current {
-        IncrementalOptions::CurrentProject(incr_dir)
-    } else {
-        IncrementalOptions::AllDeps(incr_dir)
-    };
-
-    println!("Building..");
-    let mut stats = CompilationStats::default();
-    let build_result = cargo_build(repo_dir,
-                                   repo_dir,
-                                   Path::new("target"),
-                                   incr_options,
-                                   &mut stats,
-                                   false);
-
-    for m in build_result.messages {
-        println!("{}", m.message);
-    }
-
-    let build_reuse = match stats.modules_total as f32 {
-        0.0 => 100.0,
-        n => stats.modules_reused as f32 / n * 100.0,
-    };
-
-    println!("Modules reused: {} Total: {} Build reuse: {}%",
-             stats.modules_reused,
-             stats.modules_total,
-             build_reuse);
 }
