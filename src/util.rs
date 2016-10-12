@@ -95,6 +95,23 @@ pub fn save_output(output_dir: &Path, output: &Output) {
     write_file(&output_dir.join("stderr"), &output.stderr);
 }
 
+pub fn print_output(output: &Output) {
+    println!("");
+    println!("EXIT STATUS:");
+    println!("=============");
+    println!("{}", output.status);
+    println!("");
+
+    println!("STANDARD OUT");
+    println!("============");
+    println!("{}", into_string(output.stdout.clone()));
+    println!("");
+
+    println!("STANDARD ERR");
+    println!("============");
+    println!("{}", into_string(output.stderr.clone()));
+}
+
 pub fn make_dir(path: &Path) {
     match fs::create_dir_all(path) {
         Ok(()) => {}
@@ -219,7 +236,8 @@ pub fn cargo_build(cargo_dir: &Path,
                    target_dir: &Path,
                    incremental: IncrementalOptions,
                    stats: &mut CompilationStats,
-                   should_save_output: bool)
+                   should_save_output: bool,
+                   should_print_output: bool)
                    -> BuildResult {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
@@ -253,6 +271,9 @@ pub fn cargo_build(cargo_dir: &Path,
             if should_save_output {
                 save_output(commit_dir, &output);
             }
+            if should_print_output {
+                print_output(&output);
+            }
 
             output
         }
@@ -266,10 +287,6 @@ pub fn cargo_build(cargo_dir: &Path,
         .chain(output.stderr.iter().cloned())
         .collect();
     let all_output = into_string(all_bytes);
-
-    if !should_save_output {
-        println!("{}", all_output);
-    }
 
     let reusing_regex = Regex::new(r"(?m)^incremental: re-using (\d+) out of (\d+) modules$")
         .unwrap();

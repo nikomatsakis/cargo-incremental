@@ -61,7 +61,8 @@ pub fn build(args: &Args) {
                                    Path::new("target"),
                                    incr_options,
                                    &mut stats,
-                                   false);
+                                   false,
+                                   true);
 
     for m in build_result.messages {
         println!("{}", m.message);
