@@ -34,6 +34,10 @@ use super::util::short_id;
 pub fn find_path<'obj, 'repo>(start: Option<Commit<'repo>>,
                               end: Commit<'repo>)
                               -> Vec<Commit<'repo>> {
+    debug!("find_path(start={}, end={})",
+        start.as_ref().map(short_id).unwrap_or("None".to_string()),
+        short_id(&end));
+
     let start_id = start.as_ref().map(|c| c.id());
 
     // Collect all nodes reachable from the start.

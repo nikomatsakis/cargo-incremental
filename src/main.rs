@@ -4,6 +4,10 @@ extern crate regex;
 extern crate rustc_serialize;
 extern crate progress;
 
+#[macro_use]
+extern crate log;
+extern crate env_logger;
+
 use docopt::Docopt;
 use std::env;
 
@@ -75,6 +79,9 @@ macro_rules! error {
 }
 
 fn main() {
+    env_logger::init().unwrap();
+    debug!("env_logger initialized");
+
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.argv(env::args().into_iter()).decode())
         .unwrap_or_else(|e| e.exit());
