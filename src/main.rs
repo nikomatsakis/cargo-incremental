@@ -61,6 +61,7 @@ pub struct Args {
     arg_arguments: Vec<String>,
     flag_cargo: String,
     arg_branch_name: String,
+    flag_revisions: String,
     flag_work_dir: String,
     flag_just_current: bool,
     flag_cli_log: bool,
