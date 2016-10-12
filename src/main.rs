@@ -45,6 +45,7 @@ Options:
     --revisions REV    range of revisions to test [default: HEAD~5..HEAD]
     --work-dir DIR     directory where we can do our work [default: work]
     --just-current     track just the current projection incrementally, not all deps
+    --cli-log          print all sub-process output instead of writing to files
 ";
 
 // dead code allowed for now
@@ -58,6 +59,7 @@ pub struct Args {
     arg_branch_name: String,
     flag_work_dir: String,
     flag_just_current: bool,
+    flag_cli_log: bool,
 }
 
 macro_rules! error {

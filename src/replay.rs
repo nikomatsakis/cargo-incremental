@@ -8,7 +8,7 @@ use std::process::Command;
 use super::Args;
 use super::dfs;
 use super::util;
-use super::util::{cargo_build, save_output, CompilationStats, IncrementalOptions, TestResult,
+use super::util::{cargo_build, CompilationStats, IncrementalOptions, TestResult,
                   TestCaseResult};
 
 pub fn replay(args: &Args) {
@@ -98,15 +98,20 @@ pub fn replay(args: &Args) {
     };
 
     let mut bar = Bar::new();
+
     let stages =
         &["checkout", "normal build", "normal test", "incremental build", "incremental test"];
     let mut update_percent = |crate_index: usize, crate_id: &str, stage_index: usize| {
-        bar.set_job_title(&format!("processing {} ({})", crate_id, stages[stage_index]));
-        let num_stages = stages.len() as f32;
-        let progress = (crate_index as f32 * num_stages) + (stage_index as f32);
-        let total = (commits.len() as f32) * num_stages;
-        let percentage = progress / total * 100.0;
-        bar.reach_percent(percentage as i32);
+        if args.flag_cli_log {
+            println!("processing {} ({})", crate_id, stages[stage_index]);
+        } else {
+            bar.set_job_title(&format!("processing {} ({})", crate_id, stages[stage_index]));
+            let num_stages = stages.len() as f32;
+            let progress = (crate_index as f32 * num_stages) + (stage_index as f32);
+            let total = (commits.len() as f32) * num_stages;
+            let percentage = progress / total * 100.0;
+            bar.reach_percent(percentage as i32);
+        }
     };
     let mut stats = vec![CompilationStats::default(), CompilationStats::default()];
     let (mut tests_total, mut tests_passed) = (0, 0);
@@ -124,7 +129,8 @@ pub fn replay(args: &Args) {
                                           &target_normal_dir,
                                           IncrementalOptions::None,
                                           &mut stats[0],
-                                          true);
+                                          !args.flag_cli_log,
+                                          args.flag_cli_log);
 
         update_percent(index, &short_id, 2);
         let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
@@ -132,7 +138,8 @@ pub fn replay(args: &Args) {
         let normal_test = cargo_test(&cargo_dir,
                                      &commit_dir,
                                      &target_normal_dir,
-                                     IncrementalOptions::None);
+                                     IncrementalOptions::None,
+                                     args.flag_cli_log);
 
         update_percent(index, &short_id, 3);
         let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build", index, short_id));
@@ -147,12 +154,17 @@ pub fn replay(args: &Args) {
                                         &target_incr_dir,
                                         incr_options,
                                         &mut stats[1],
-                                        true);
+                                        !args.flag_cli_log,
+                                        args.flag_cli_log);
 
         update_percent(index, &short_id, 4);
         let commit_dir = commits_dir.join(format!("{:04}-{}-incr-test", index, short_id));
         util::make_dir(&commit_dir);
-        let incr_test = cargo_test(&cargo_dir, &commit_dir, &target_incr_dir, incr_options);
+        let incr_test = cargo_test(&cargo_dir,
+                                   &commit_dir,
+                                   &target_incr_dir,
+                                   incr_options,
+                                   args.flag_cli_log);
 
         if normal_messages != incr_messages {
             error!("incremental build differed from normal build")
@@ -187,7 +199,8 @@ pub fn replay(args: &Args) {
 fn cargo_test(cargo_dir: &Path,
               commit_dir: &Path,
               target_dir: &Path,
-              incremental: IncrementalOptions)
+              incremental: IncrementalOptions,
+              cli_log_mode: bool)
               -> TestResult {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
@@ -207,7 +220,11 @@ fn cargo_test(cargo_dir: &Path,
     let output = cmd.output();
     let output = match output {
         Ok(output) => {
-            save_output(commit_dir, &output);
+            if cli_log_mode {
+                util::print_output(&output);
+            } else {
+                util::save_output(commit_dir, &output);
+            }
             output
         }
         Err(err) => error!("failed to execute `cargo build`: {}", err),
@@ -233,13 +250,15 @@ fn cargo_test(cargo_dir: &Path,
 
     test_results.sort();
 
-    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; \d+ ignored; \d+ measured$")
+    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured$")
         .unwrap();
 
     let nb_tests_summary = summary_regex.captures_iter(&all_output)
         .fold(0, |acc, captures| {
-            acc + captures.at(1).unwrap().parse::<usize>().unwrap() +
-            captures.at(2).unwrap().parse::<usize>().unwrap()
+            acc +
+              captures.at(1).unwrap().parse::<usize>().unwrap() + // passed
+              captures.at(2).unwrap().parse::<usize>().unwrap() + // failed
+              captures.at(3).unwrap().parse::<usize>().unwrap()   // ignored
         });
 
     if nb_tests_summary != test_results.len() {
