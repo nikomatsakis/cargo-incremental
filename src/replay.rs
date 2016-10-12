@@ -13,6 +13,8 @@ use super::util::{cargo_build, CompilationStats, IncrementalOptions, TestResult,
 
 pub fn replay(args: &Args) {
     assert!(args.cmd_replay);
+    debug!("replay(): branch = {}", args.arg_branch_name);
+    debug!("replay(): revisions = {}", args.flag_revisions);
 
     let cargo_toml_path = Path::new(&args.flag_cargo);
 
@@ -35,13 +37,17 @@ pub fn replay(args: &Args) {
 
     util::check_clean(repo);
 
+    // Set HEAD to the branch we are interested in
+    util::checkout_branch(repo, &args.arg_branch_name);
+
+    // Filter down to the range of revisions specified by the user
     let (from_commit, to_commit);
-    if args.arg_branch_name.contains("..") {
-        let revisions = match repo.revparse(&args.arg_branch_name) {
+    if args.flag_revisions.contains("..") {
+        let revisions = match repo.revparse(&args.flag_revisions) {
             Ok(revspec) => revspec,
             Err(err) => {
                 error!("failed to parse revspec `{}`: {}",
-                       args.arg_branch_name,
+                       args.flag_revisions,
                        err)
             }
         };
@@ -51,7 +57,7 @@ pub fn replay(args: &Args) {
             Some(object) => Some(util::commit_or_error(object.clone())),
             None => {
                 error!("revspec `{}` had no \"from\" point specified",
-                       args.arg_branch_name)
+                       args.flag_revisions)
             }
         };
 
@@ -59,17 +65,17 @@ pub fn replay(args: &Args) {
             Some(object) => util::commit_or_error(object.clone()),
             None => {
                 error!("revspec `{}` had no \"to\" point specified; try something like `{}..HEAD`",
-                       args.arg_branch_name,
-                       args.arg_branch_name)
+                       args.flag_revisions,
+                       args.flag_revisions)
             }
         };
     } else {
         from_commit = None;
-        to_commit = match repo.revparse_single(&args.arg_branch_name) {
+        to_commit = match repo.revparse_single(&args.flag_revisions) {
             Ok(revspec) => util::commit_or_error(revspec),
             Err(err) => {
                 error!("failed to parse revspec `{}`: {}",
-                       args.arg_branch_name,
+                       args.flag_revisions,
                        err)
             }
         };
@@ -119,7 +125,7 @@ pub fn replay(args: &Args) {
         let short_id = util::short_id(commit);
 
         update_percent(index, &short_id, 0);
-        util::checkout(repo, commit);
+        util::checkout_commit(repo, commit);
 
         update_percent(index, &short_id, 1);
         let commit_dir = commits_dir.join(format!("{:04}-{}-normal-build", index, short_id));
