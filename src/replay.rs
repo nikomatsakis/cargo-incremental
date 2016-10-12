@@ -233,13 +233,15 @@ fn cargo_test(cargo_dir: &Path,
 
     test_results.sort();
 
-    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; \d+ ignored; \d+ measured$")
+    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured$")
         .unwrap();
 
     let nb_tests_summary = summary_regex.captures_iter(&all_output)
         .fold(0, |acc, captures| {
-            acc + captures.at(1).unwrap().parse::<usize>().unwrap() +
-            captures.at(2).unwrap().parse::<usize>().unwrap()
+            acc +
+              captures.at(1).unwrap().parse::<usize>().unwrap() + // passed
+              captures.at(2).unwrap().parse::<usize>().unwrap() + // failed
+              captures.at(3).unwrap().parse::<usize>().unwrap()   // ignored
         });
 
     if nb_tests_summary != test_results.len() {
