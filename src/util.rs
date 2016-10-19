@@ -360,3 +360,21 @@ pub fn cargo_build(cargo_dir: &Path,
         messages: messages,
     }
 }
+
+pub fn dir_entries(dir: &Path) -> Vec<PathBuf> {
+    debug!("dir_entries({})", dir.display());
+    let dir_iter = fs::read_dir(dir).unwrap_or_else(|err| {
+        error!("could not read directory `{}`: {}", dir.display(), err)
+    });
+
+    dir_iter.map(|entry| {
+        let entry = entry.unwrap_or_else(|err| {
+            error!("could not read reference directory entry: {}", err)
+        });
+
+        let path = entry.path().canonicalize().unwrap();
+        debug!("dir_entries: - {}", path.display());
+        path
+    })
+    .collect()
+}
