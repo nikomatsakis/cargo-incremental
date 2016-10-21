@@ -178,31 +178,6 @@ pub fn check_clean(repo: &Repository) {
     }
 }
 
-pub fn checkout_branch(repo: &Repository, branch_name: &str) {
-    let branch = match repo.find_branch(branch_name, BranchType::Local) {
-        Ok(branch) => branch,
-        Err(err) => {
-            error!("encountered error looking up branch `{}`: {}",
-                   branch_name,
-                   err)
-        }
-    };
-
-    let direct_reference = match branch.get().resolve() {
-        Ok(r) => r,
-        Err(err) => {
-            error!("encountered error resolving reference `{}`: {}",
-                   branch_name,
-                   err)
-        }
-    };
-
-    let commit_oid = direct_reference.target().unwrap();
-    let commit = repo.find_commit(commit_oid).unwrap();
-
-    checkout_commit(repo, &commit);
-}
-
 pub fn checkout_commit(repo: &Repository, commit: &Commit) {
     let mut cb = CheckoutBuilder::new();
     match repo.checkout_tree(commit.as_object(), Some(&mut cb)) {
