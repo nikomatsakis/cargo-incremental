@@ -1,5 +1,5 @@
 use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status,
-           STATUS_IGNORED, BranchType};
+           STATUS_IGNORED};
 use git2::build::CheckoutBuilder;
 use std::fs;
 use std::io;
