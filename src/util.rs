@@ -25,10 +25,18 @@ pub enum IncrementalOptions<'p> {
     CurrentProject(&'p Path),
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Eq, Debug)]
 pub struct BuildResult {
     pub success: bool,
     pub messages: Vec<Message>,
+    pub raw_output: Output,
+}
+
+impl PartialEq for BuildResult {
+    fn eq(&self, other: &BuildResult) -> bool {
+        self.success == other.success &&
+        self.messages == other.messages
+    }
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -237,8 +245,7 @@ pub fn cargo_build(cargo_dir: &Path,
                    target_dir: &Path,
                    incremental: IncrementalOptions,
                    stats: &mut CompilationStats,
-                   should_save_output: bool,
-                   should_print_output: bool)
+                   should_save_output: bool)
                    -> BuildResult {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
@@ -271,9 +278,6 @@ pub fn cargo_build(cargo_dir: &Path,
         Ok(output) => {
             if should_save_output {
                 save_output(commit_dir, &output);
-            }
-            if should_print_output {
-                print_output(&output);
             }
 
             output
@@ -333,6 +337,7 @@ pub fn cargo_build(cargo_dir: &Path,
     BuildResult {
         success: output.status.success(),
         messages: messages,
+        raw_output: output,
     }
 }
 

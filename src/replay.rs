@@ -13,6 +13,26 @@ use super::util;
 use super::util::{cargo_build, CompilationStats, IncrementalOptions, TestResult,
                   TestCaseResult};
 
+const CHECKOUT: &'static str = "checkout";
+const NORMAL_BUILD: &'static str = "normal build";
+const COMPARE_BUILDS: &'static str = "compare incr/normal builds";
+const NORMAL_TEST: &'static str = "normal test";
+const INCREMENTAL_BUILD: &'static str = "incremental build";
+const INCREMENTAL_TEST: &'static str = "incremental test";
+const COMPARE_TESTS: &'static str = "compare incr/normal tests";
+const INCREMENTAL_BUILD_NO_CHANGE: &'static str = "incremental build / no change";
+const INCREMENTAL_BUILD_NO_CACHE: &'static str = "incremental build / no cache";
+
+const STAGES: &'static [&'static str] = &[CHECKOUT,
+                                          NORMAL_BUILD,
+                                          NORMAL_TEST,
+                                          INCREMENTAL_BUILD,
+                                          COMPARE_BUILDS,
+                                          INCREMENTAL_TEST,
+                                          COMPARE_TESTS,
+                                          INCREMENTAL_BUILD_NO_CHANGE,
+                                          INCREMENTAL_BUILD_NO_CACHE];
+
 pub fn replay(args: &Args) {
     assert!(args.cmd_replay);
     debug!("replay(): revisions = {}", args.arg_revisions);
@@ -49,7 +69,6 @@ pub fn replay(args: &Args) {
                        err)
             }
         };
-
 
         from_commit = match revisions.from() {
             Some(object) => Some(util::commit_or_error(object.clone())),
@@ -94,7 +113,14 @@ pub fn replay(args: &Args) {
     let target_incr_dir = util::absolute_dir_path(&work_dir.join("target-incr"));
     let target_normal_dir = util::absolute_dir_path(&work_dir.join("target-normal"));
     let target_incr_from_scratch_dir = util::absolute_dir_path(&work_dir.join("target-incr-from-scratch"));
+
     let incr_dir = util::absolute_dir_path(&work_dir.join("incr"));
+    let incr_options = if args.flag_just_current {
+        IncrementalOptions::CurrentProject(&incr_dir)
+    } else {
+        IncrementalOptions::AllDeps(&incr_dir)
+    };
+
     let incr_from_scratch_dir = work_dir.join("incr-from-scratch");
 
     let commits_dir = work_dir.join("commits");
@@ -106,36 +132,6 @@ pub fn replay(args: &Args) {
     };
 
     let mut bar = Bar::new();
-
-    const CHECKOUT: &'static str = "checkout";
-    const NORMAL_BUILD: &'static str = "normal build";
-    const NORMAL_TEST: &'static str = "normal test";
-    const INCREMENTAL_BUILD: &'static str = "incremental build";
-    const INCREMENTAL_TEST: &'static str = "incremental test";
-    const INCREMENTAL_BUILD_NO_CHANGE: &'static str = "incremental build (no change)";
-    const INCREMENTAL_BUILD_NO_CACHE: &'static str = "incremental build (no cache)";
-
-    const STAGES: &'static [&'static str] = &[CHECKOUT,
-                                              NORMAL_BUILD,
-                                              NORMAL_TEST,
-                                              INCREMENTAL_BUILD,
-                                              INCREMENTAL_TEST,
-                                              INCREMENTAL_BUILD_NO_CHANGE,
-                                              INCREMENTAL_BUILD_NO_CACHE];
-
-    let mut update_percent = |crate_index: usize, crate_id: &str, stage_label: &str| {
-        let stage_index = STAGES.iter().position(|&x| x == stage_label).unwrap();
-        if args.flag_cli_log {
-            println!("processing {} ({})", crate_id, STAGES[stage_index]);
-        } else {
-            bar.set_job_title(&format!("processing {} ({})", crate_id, STAGES[stage_index]));
-            let num_stages = STAGES.len() as f32;
-            let progress = (crate_index as f32 * num_stages) + (stage_index as f32);
-            let total = (commits.len() as f32) * num_stages;
-            let percentage = progress / total * 100.0;
-            bar.reach_percent(percentage as i32);
-        }
-    };
     let mut stats_normal = CompilationStats::default();
     let mut stats_incr = CompilationStats::default();
     let mut stats_incr_from_scratch = CompilationStats::default();
@@ -144,134 +140,166 @@ pub fn replay(args: &Args) {
 
     for (index, commit) in commits.iter().enumerate() {
         let short_id = util::short_id(commit);
+        let mut sub_task_runner = SubTaskRunner {
+            progress_bar: &mut bar,
+            commit_id: short_id.clone(),
+            commit_index: index,
+            cli_log: args.flag_cli_log,
+            total_commit_count: commits.len(),
+        };
 
-        update_percent(index, &short_id, CHECKOUT);
-        util::checkout_commit(repo, commit);
+        sub_task_runner.run(CHECKOUT, || {
+            util::checkout_commit(repo, commit);
+            ((), "OK")
+        });
 
         // NORMAL BUILD --------------------------------------------------------
-        update_percent(index, &short_id, NORMAL_BUILD);
-        let commit_dir = commits_dir.join(format!("{:04}-{}-normal-build", index, short_id));
-        util::make_dir(&commit_dir);
-        let normal_build_result = cargo_build(&cargo_dir,
-                                              &commit_dir,
-                                              &target_normal_dir,
-                                              IncrementalOptions::None,
-                                              &mut stats_normal,
-                                              !args.flag_cli_log,
-                                              args.flag_cli_log);
+        let normal_build_result = sub_task_runner.run(NORMAL_BUILD, || {
+            let commit_dir = commits_dir.join(format!("{:04}-{}-normal-build", index, short_id));
+            util::make_dir(&commit_dir);
+            (cargo_build(&cargo_dir,
+                         &commit_dir,
+                         &target_normal_dir,
+                         IncrementalOptions::None,
+                         &mut stats_normal,
+                         !args.flag_cli_log),
+             "OK")
+        });
 
         // NORMAL TESTING ------------------------------------------------------
-        update_percent(index, &short_id, NORMAL_TEST);
-        let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
-        util::make_dir(&commit_dir);
-        let normal_test = cargo_test(&cargo_dir,
-                                     &commit_dir,
-                                     &target_normal_dir,
-                                     IncrementalOptions::None,
-                                     args.flag_cli_log);
-
+        let normal_test = sub_task_runner.run(NORMAL_TEST, || {
+            let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
+            util::make_dir(&commit_dir);
+            (cargo_test(&cargo_dir,
+                        &commit_dir,
+                        &target_normal_dir,
+                        IncrementalOptions::None),
+             "OK")
+        });
 
         // INCREMENTAL BUILD ---------------------------------------------------
-        update_percent(index, &short_id, INCREMENTAL_BUILD);
-        let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build", index, short_id));
-        util::make_dir(&commit_dir);
-        let incr_options = if args.flag_just_current {
-            IncrementalOptions::CurrentProject(&incr_dir)
-        } else {
-            IncrementalOptions::AllDeps(&incr_dir)
-        };
-        let incr_build_result = cargo_build(&cargo_dir,
-                                            &commit_dir,
-                                            &target_incr_dir,
-                                            incr_options,
-                                            &mut stats_incr,
-                                            !args.flag_cli_log,
-                                            args.flag_cli_log);
-
+        let incr_build_result = sub_task_runner.run(INCREMENTAL_BUILD, || {
+            let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build", index, short_id));
+            util::make_dir(&commit_dir);
+            (cargo_build(&cargo_dir,
+                         &commit_dir,
+                         &target_incr_dir,
+                         incr_options,
+                         &mut stats_incr,
+                         !args.flag_cli_log),
+             "OK")
+        });
 
         // COMPARE BUILD CLI OUTPUT --------------------------------------------
-        if normal_build_result != incr_build_result {
-            error!("incremental build differed from normal build")
-        }
+        sub_task_runner.run(COMPARE_BUILDS, || {
+            if normal_build_result != incr_build_result {
+                println!("OUTPUT OF NORMAL BUILD:\n");
+                util::print_output(&normal_build_result.raw_output);
 
+                println!("\nOUTPUT OF INCREMENTAL BUILD:\n");
+                util::print_output(&normal_build_result.raw_output);
+
+                error!("incremental build differed from normal build")
+            } else {
+                ((), "OK")
+            }
+        });
 
         // INCREMENTAL TESTING -------------------------------------------------
-        update_percent(index, &short_id, INCREMENTAL_TEST);
-        let commit_dir = commits_dir.join(format!("{:04}-{}-incr-test", index, short_id));
-        util::make_dir(&commit_dir);
-        let incr_test = cargo_test(&cargo_dir,
-                                   &commit_dir,
-                                   &target_incr_dir,
-                                   incr_options,
-                                   args.flag_cli_log);
+        let incr_test = sub_task_runner.run(INCREMENTAL_TEST, || {
+            let commit_dir = commits_dir.join(format!("{:04}-{}-incr-test", index, short_id));
+            util::make_dir(&commit_dir);
+            (cargo_test(&cargo_dir,
+                        &commit_dir,
+                        &target_incr_dir,
+                        incr_options),
+             "OK")
+        });
 
 
         // COMPARE TEST RESULTS ------------------------------------------------
-        if normal_test != incr_test {
-            error!("incremental tests differed from normal tests")
-        }
+        sub_task_runner.run(COMPARE_TESTS, || {
+            if normal_test != incr_test {
+                error!("incremental tests differed from normal tests")
+            } else {
+                ((), "OK")
+            }
+        });
 
 
         // INCREMENTAL BUILD (FULL RE-USE) -------------------------------------
-        update_percent(index, &short_id, INCREMENTAL_BUILD_NO_CHANGE);
-        if incr_build_result.success {
-            let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-full-re-use", index, short_id));
-            util::make_dir(&commit_dir);
-            let mut full_reuse_stats = CompilationStats::default();
-            assert_eq!(full_reuse_stats.modules_reused, 0);
-            assert_eq!(full_reuse_stats.modules_total, 0);
-            cargo_build(&cargo_dir,
-                        &commit_dir,
-                        &target_incr_dir,
-                        incr_options, // NOTE: we are using the same cache dir
-                        &mut full_reuse_stats,
-                        !args.flag_cli_log,
-                        args.flag_cli_log);
+        sub_task_runner.run(INCREMENTAL_BUILD_NO_CHANGE, || {
+            if incr_build_result.success {
+                let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-full-re-use", index, short_id));
+                util::make_dir(&commit_dir);
+                let mut full_reuse_stats = CompilationStats::default();
+                assert_eq!(full_reuse_stats.modules_reused, 0);
+                assert_eq!(full_reuse_stats.modules_total, 0);
 
+                let result_no_change = cargo_build(&cargo_dir,
+                                                   &commit_dir,
+                                                   &target_incr_dir,
+                                                   incr_options, // NOTE: we are using the same cache dir
+                                                   &mut full_reuse_stats,
+                                                   !args.flag_cli_log);
+                if result_no_change.success {
+                    if full_reuse_stats.modules_reused != full_reuse_stats.modules_total {
+                        error!("only {} modules out of {} re-used in full re-use test",
+                                full_reuse_stats.modules_reused,
+                                full_reuse_stats.modules_total)
+                    }
+                } else {
+                    util::print_output(&result_no_change.raw_output);
+                    error!("error during (no change) build!");
+                }
 
-            // CHECK FULL RE-USE ---------------------------------------------------
-            if full_reuse_stats.modules_reused != full_reuse_stats.modules_total {
-                error!("only {} modules out of {} re-used in full re-use test",
-                        full_reuse_stats.modules_reused,
-                        full_reuse_stats.modules_total)
+                ((), "OK")
+            } else {
+                ((), "skipped")
             }
-        }
+        });
 
 
         // INCREMENTAL BUILD (FROM SCRATCH) ------------------------------------
-        update_percent(index, &short_id, INCREMENTAL_BUILD_NO_CACHE);
-        if incr_build_result.success {
-            let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-from-scratch", index, short_id));
-            util::make_dir(&commit_dir);
-            // We want to do a clean rebuild in incremental mode, so clear the
-            // incremental compilation cache
-            util::remove_dir(&incr_from_scratch_dir);
-            util::make_dir(&incr_from_scratch_dir);
-            util::remove_dir(&target_incr_from_scratch_dir);
-            util::make_dir(&target_incr_from_scratch_dir);
-            let incr_from_scratch_options = if args.flag_just_current {
-                IncrementalOptions::CurrentProject(&incr_from_scratch_dir)
+        sub_task_runner.run(INCREMENTAL_BUILD_NO_CACHE, || {
+            if incr_build_result.success {
+                let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-from-scratch", index, short_id));
+                util::make_dir(&commit_dir);
+                // We want to do a clean rebuild in incremental mode, so clear the
+                // incremental compilation cache
+                util::remove_dir(&incr_from_scratch_dir);
+                util::make_dir(&incr_from_scratch_dir);
+                util::remove_dir(&target_incr_from_scratch_dir);
+                util::make_dir(&target_incr_from_scratch_dir);
+                let incr_from_scratch_options = if args.flag_just_current {
+                    IncrementalOptions::CurrentProject(&incr_from_scratch_dir)
+                } else {
+                    IncrementalOptions::AllDeps(&incr_from_scratch_dir)
+                };
+                let _ = cargo_build(&cargo_dir,
+                                    &commit_dir,
+                                    &target_incr_from_scratch_dir,
+                                    incr_from_scratch_options,
+                                    &mut stats_incr_from_scratch,
+                                    !args.flag_cli_log);
+
+
+                // CHECK THAT REGULAR AND FROM-SCRATCH INCREMENTAL COMPILATION YIELD THE
+                // SAME RESULTS
+                compare_incr_comp_dirs(&incr_from_scratch_dir, &incr_dir);
+                ((), "OK")
             } else {
-                IncrementalOptions::AllDeps(&incr_from_scratch_dir)
-            };
-            let _ = cargo_build(&cargo_dir,
-                                &commit_dir,
-                                &target_incr_from_scratch_dir,
-                                incr_from_scratch_options,
-                                &mut stats_incr_from_scratch,
-                                !args.flag_cli_log,
-                                args.flag_cli_log);
-
-
-            // CHECK THAT REGULAR AND FROM-SCRATCH INCREMENTAL COMPILATION YIELD THE
-            // SAME RESULTS
-            compare_incr_comp_dirs(&incr_from_scratch_dir, &incr_dir);
-        }
-
+                ((), "skipped")
+            }
+        });
 
         // UPDATE STATISTICS
         tests_passed += normal_test.results.iter().filter(|t| t.status == "ok").count();
         tests_total += normal_test.results.len();
+    }
+
+    if !args.flag_cli_log {
+        bar.reach_percent(100);
     }
 
     assert!(stats_normal.modules_reused == 0, "normal build reused modules");
@@ -294,8 +322,7 @@ pub fn replay(args: &Args) {
 fn cargo_test(cargo_dir: &Path,
               commit_dir: &Path,
               target_dir: &Path,
-              incremental: IncrementalOptions,
-              cli_log_mode: bool)
+              incremental: IncrementalOptions)
               -> TestResult {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
@@ -315,11 +342,7 @@ fn cargo_test(cargo_dir: &Path,
     let output = cmd.output();
     let output = match output {
         Ok(output) => {
-            if cli_log_mode {
-                util::print_output(&output);
-            } else {
-                util::save_output(commit_dir, &output);
-            }
+            util::save_output(commit_dir, &output);
             output
         }
         Err(err) => error!("failed to execute `cargo build`: {}", err),
@@ -541,5 +564,47 @@ fn compare_files(file1_path: &Path, file2_path: &Path) {
         }
 
         bytes_left -= bytes_to_read;
+    }
+}
+
+
+struct SubTaskRunner<'a> {
+    progress_bar: &'a mut Bar,
+    commit_index: usize,
+    commit_id: String,
+    cli_log: bool,
+    total_commit_count: usize,
+}
+
+impl<'a> SubTaskRunner<'a> {
+
+    fn run<F, T>(&mut self, task_label: &str, task: F) -> T
+        where F: FnOnce() -> (T, &'static str)
+    {
+        let stage_index = STAGES.iter().position(|&x| x == task_label).unwrap();
+        let task_title = &format!("{} ({})", STAGES[stage_index], self.commit_id);
+        if self.cli_log {
+            let stdout = ::std::io::stdout();
+            let mut stdout = stdout.lock();
+            write!(stdout, "{}", task_title).unwrap();
+            write!(stdout, " ... ").unwrap();
+            stdout.flush().unwrap();
+        } else {
+            self.progress_bar.set_job_title(task_title);
+        }
+
+        let (result, message) = task();
+
+        if self.cli_log {
+            println!("{}", message);
+        } else {
+            let num_stages = STAGES.len() as f32;
+            let progress = (self.commit_index as f32 * num_stages) + (stage_index as f32);
+            let total = (self.total_commit_count as f32) * num_stages;
+            let percentage = progress / total * 100.0;
+            self.progress_bar.reach_percent(percentage as i32);
+        }
+
+        result
     }
 }
