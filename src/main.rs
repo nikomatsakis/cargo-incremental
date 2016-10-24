@@ -13,7 +13,7 @@ use std::env;
 
 const USAGE: &'static str = "
 Usage: cargo-incremental build [options]
-       cargo-incremental replay [options] <branch-name>
+       cargo-incremental replay [options] <revisions>
        cargo-incremental --help
 
 This is a tool for testing incremental compilation. It offers two main
@@ -46,7 +46,6 @@ contents. =)
 
 Options:
     --cargo CARGO      path to Cargo.toml [default: Cargo.toml]
-    --revisions REV    range of revisions to test [default: HEAD~5..HEAD]
     --work-dir DIR     directory where we can do our work [default: work]
     --just-current     track just the current projection incrementally, not all deps
     --cli-log          print all sub-process output instead of writing to files
@@ -60,8 +59,7 @@ pub struct Args {
     cmd_replay: bool,
     arg_arguments: Vec<String>,
     flag_cargo: String,
-    arg_branch_name: String,
-    flag_revisions: String,
+    arg_revisions: String,
     flag_work_dir: String,
     flag_just_current: bool,
     flag_cli_log: bool,

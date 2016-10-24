@@ -15,8 +15,7 @@ use super::util::{cargo_build, CompilationStats, IncrementalOptions, TestResult,
 
 pub fn replay(args: &Args) {
     assert!(args.cmd_replay);
-    debug!("replay(): branch = {}", args.arg_branch_name);
-    debug!("replay(): revisions = {}", args.flag_revisions);
+    debug!("replay(): revisions = {}", args.arg_revisions);
 
     let cargo_toml_path = Path::new(&args.flag_cargo);
 
@@ -39,17 +38,14 @@ pub fn replay(args: &Args) {
 
     util::check_clean(repo);
 
-    // Set HEAD to the branch we are interested in
-    util::checkout_branch(repo, &args.arg_branch_name);
-
     // Filter down to the range of revisions specified by the user
     let (from_commit, to_commit);
-    if args.flag_revisions.contains("..") {
-        let revisions = match repo.revparse(&args.flag_revisions) {
+    if args.arg_revisions.contains("..") {
+        let revisions = match repo.revparse(&args.arg_revisions) {
             Ok(revspec) => revspec,
             Err(err) => {
                 error!("failed to parse revspec `{}`: {}",
-                       args.flag_revisions,
+                       args.arg_revisions,
                        err)
             }
         };
@@ -59,7 +55,7 @@ pub fn replay(args: &Args) {
             Some(object) => Some(util::commit_or_error(object.clone())),
             None => {
                 error!("revspec `{}` had no \"from\" point specified",
-                       args.flag_revisions)
+                       args.arg_revisions)
             }
         };
 
@@ -67,17 +63,17 @@ pub fn replay(args: &Args) {
             Some(object) => util::commit_or_error(object.clone()),
             None => {
                 error!("revspec `{}` had no \"to\" point specified; try something like `{}..HEAD`",
-                       args.flag_revisions,
-                       args.flag_revisions)
+                       args.arg_revisions,
+                       args.arg_revisions)
             }
         };
     } else {
         from_commit = None;
-        to_commit = match repo.revparse_single(&args.flag_revisions) {
+        to_commit = match repo.revparse_single(&args.arg_revisions) {
             Ok(revspec) => util::commit_or_error(revspec),
             Err(err) => {
                 error!("failed to parse revspec `{}`: {}",
-                       args.flag_revisions,
+                       args.arg_revisions,
                        err)
             }
         };
