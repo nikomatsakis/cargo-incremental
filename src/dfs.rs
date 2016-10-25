@@ -1,5 +1,6 @@
 use git2::{Commit, Oid};
 use std::collections::HashSet;
+use std::hash::Hash;
 use std::io::prelude::*;
 
 use super::util::short_id;
@@ -31,18 +32,19 @@ use super::util::short_id;
 ///   points.  If we omitted things that could not reach `start`
 ///   (e.g., walking only B, A in in our example) then we might just
 ///   miss commit C altogether.
-pub fn find_path<'obj, 'repo>(start: Option<Commit<'repo>>,
-                              end: Commit<'repo>)
-                              -> Vec<Commit<'repo>> {
+pub fn find_path<NODE: DfsNode>(start: Option<NODE>,
+                                end: NODE)
+                                -> Vec<NODE> {
     debug!("find_path(start={}, end={})",
-        start.as_ref().map(short_id).unwrap_or("None".to_string()),
-        short_id(&end));
+        start.as_ref().map(DfsNode::human_readable_id).unwrap_or("None".to_string()),
+        end.human_readable_id());
 
     let start_id = start.as_ref().map(|c| c.id());
 
     // Collect all nodes reachable from the start.
     let mut reachable_from_start = start.map(|c| walk(c, |_| true, |_| ()))
         .unwrap_or(HashSet::new());
+
     if let Some(start_id) = start_id {
         reachable_from_start.remove(&start_id);
     }
@@ -55,37 +57,30 @@ pub fn find_path<'obj, 'repo>(start: Option<Commit<'repo>>,
          |c| !reachable_from_start.contains(&c.id()),
          |c| commits.push(c));
 
-    // `commits` is now post-order; reverse it, and return.
-    commits.reverse();
-
     commits
 }
 
-fn walk<'repo, PRE, POST>(start: Commit<'repo>, mut check: PRE, mut complete: POST) -> HashSet<Oid>
-    where PRE: FnMut(&Commit<'repo>) -> bool,
-          POST: FnMut(Commit<'repo>)
+fn walk<NODE, PRE, POST>(
+        start: NODE,
+        mut check: PRE,
+        mut complete: POST) -> HashSet<NODE::Id>
+    where NODE: DfsNode,
+          PRE: FnMut(&NODE) -> bool,
+          POST: FnMut(NODE)
 {
     let mut visited = HashSet::new();
     let mut stack = vec![DfsFrame::new(start)];
     while let Some(mut frame) = stack.pop() {
         let next_parent = frame.next_parent;
         if next_parent == frame.num_parents {
-            complete(frame.commit);
+            complete(frame.node);
         } else {
-            let commit = match frame.commit.parent(next_parent) {
-                Ok(p) => p,
-                Err(err) => {
-                    error!("unable to load parent {} of commit {}: {}",
-                           next_parent,
-                           short_id(&frame.commit),
-                           err)
-                }
-            };
+            let node = frame.node.parent(next_parent);
             frame.next_parent += 1;
             stack.push(frame);
-            if visited.insert(commit.id()) {
-                if check(&commit) {
-                    stack.push(DfsFrame::new(commit));
+            if visited.insert(node.id()) {
+                if check(&node) {
+                    stack.push(DfsFrame::new(node));
                 }
             }
         }
@@ -93,19 +88,134 @@ fn walk<'repo, PRE, POST>(start: Commit<'repo>, mut check: PRE, mut complete: PO
     visited
 }
 
-struct DfsFrame<'repo> {
-    commit: Commit<'repo>,
+struct DfsFrame<NODE: DfsNode> {
+    node: NODE,
     next_parent: usize,
     num_parents: usize,
 }
 
-impl<'repo> DfsFrame<'repo> {
-    fn new(commit: Commit<'repo>) -> Self {
-        let num_parents = commit.parents().len();
+impl<NODE: DfsNode> DfsFrame<NODE> {
+    fn new(node: NODE) -> Self {
+        let num_parents = node.num_parents();
         DfsFrame {
-            commit: commit,
+            node: node,
             next_parent: 0,
             num_parents: num_parents,
         }
+    }
+}
+
+pub trait DfsNode
+{
+    type Id: Eq + Hash;
+
+    fn id(&self) -> Self::Id;
+    fn human_readable_id(&self) -> String;
+    fn parent(&self, index: usize) -> Self;
+    fn num_parents(&self) -> usize;
+}
+
+impl<'repo> DfsNode for Commit<'repo> {
+    type Id = Oid;
+
+    fn id(&self) -> Oid {
+        self.id()
+    }
+
+    fn human_readable_id(&self) -> String {
+        short_id(self)
+    }
+
+    fn parent(&self, index: usize) -> Commit<'repo> {
+        match self.parent(index) {
+            Ok(p) => p,
+            Err(err) => {
+                error!("unable to load parent {} of commit {}: {}",
+                       index,
+                       short_id(self),
+                       err)
+            }
+        }
+    }
+
+    fn num_parents(&self) -> usize {
+        self.parents().len()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::fmt;
+    use super::{DfsNode, find_path};
+
+    #[derive(Eq, PartialEq)]
+    struct TestNode<'a> {
+        id: char,
+        parents: Vec<&'a TestNode<'a>>
+    }
+
+    impl<'a> fmt::Debug for TestNode<'a> {
+        fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+            write!(formatter, "{}", self.id)
+        }
+    }
+
+    impl<'a> TestNode<'a> {
+        fn new(id: char, parents: &[&'a TestNode<'a>]) -> TestNode<'a> {
+            TestNode {
+                id: id,
+                parents: parents.to_vec(),
+            }
+        }
+    }
+
+    impl<'a> DfsNode for &'a TestNode<'a> {
+        type Id = char;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+        fn human_readable_id(&self) -> String {
+            format!("{}", self.id)
+        }
+
+        fn parent(&self, index: usize) -> Self {
+            self.parents[index]
+        }
+        fn num_parents(&self) -> usize {
+            self.parents.len()
+        }
+    }
+
+    #[test]
+    fn test() {
+        //
+        //    a
+        //    |
+        //    b
+        //   / \
+        //  c   d
+        //   \ /
+        //    e
+        //    |
+        //    f
+        //    |
+        //    g
+        //
+        // parent relationship goes from top to bottom (e.g. B is parent of A)
+
+        let g = TestNode::new('g', &[]);
+        let f = TestNode::new('f', &[&g]);
+        let e = TestNode::new('e', &[&f]);
+        let d = TestNode::new('d', &[&e]);
+        let c = TestNode::new('c', &[&e]);
+        let b = TestNode::new('b', &[&c, &d]);
+        let a = TestNode::new('a', &[&b]);
+
+        assert_eq!(find_path(Some(&b), &a), vec![&b, &a]);
+        assert_eq!(find_path(Some(&e), &a), vec![&e, &c, &d, &b, &a]);
+        assert_eq!(find_path(Some(&g), &f), vec![&g, &f]);
+        assert_eq!(find_path(None, &f), vec![&g, &f]);
+        assert_eq!(find_path(Some(&d), &b), vec![&c, &d, &b]);
     }
 }
