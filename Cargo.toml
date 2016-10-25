@@ -3,7 +3,7 @@ name = "cargo-incremental"
 version = "0.1.0"
 authors = ["Niko Matsakis <niko@alum.mit.edu>"]
 license = "Apache-2.0/MIT"
-documentation = "A tool for using and testing rustc's incremental compilation support"
+description = "A tool for using and testing rustc's incremental compilation support"
 repository = "http://github.com/nikomatsakis/cargo-incremental/"
 
 [dependencies]
