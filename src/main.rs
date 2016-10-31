@@ -49,6 +49,7 @@ Options:
     --work-dir DIR     directory where we can do our work [default: work]
     --just-current     track just the current projection incrementally, not all deps
     --cli-log          print all sub-process output instead of writing to files
+    --skip-tests       do not run tests, just compare compilation artifacts
 ";
 
 // dead code allowed for now
@@ -63,6 +64,7 @@ pub struct Args {
     flag_work_dir: String,
     flag_just_current: bool,
     flag_cli_log: bool,
+    flag_skip_tests: bool,
 }
 
 macro_rules! error {

@@ -15,9 +15,9 @@ use super::util::{cargo_build, CompilationStats, IncrementalOptions, TestResult,
 
 const CHECKOUT: &'static str = "checkout";
 const NORMAL_BUILD: &'static str = "normal build";
+const INCREMENTAL_BUILD: &'static str = "incremental build";
 const COMPARE_BUILDS: &'static str = "compare incr/normal builds";
 const NORMAL_TEST: &'static str = "normal test";
-const INCREMENTAL_BUILD: &'static str = "incremental build";
 const INCREMENTAL_TEST: &'static str = "incremental test";
 const COMPARE_TESTS: &'static str = "compare incr/normal tests";
 const INCREMENTAL_BUILD_NO_CHANGE: &'static str = "incremental build / no change";
@@ -25,9 +25,9 @@ const INCREMENTAL_BUILD_NO_CACHE: &'static str = "incremental build / no cache";
 
 const STAGES: &'static [&'static str] = &[CHECKOUT,
                                           NORMAL_BUILD,
-                                          NORMAL_TEST,
                                           INCREMENTAL_BUILD,
                                           COMPARE_BUILDS,
+                                          NORMAL_TEST,
                                           INCREMENTAL_TEST,
                                           COMPARE_TESTS,
                                           INCREMENTAL_BUILD_NO_CHANGE,
@@ -166,17 +166,6 @@ pub fn replay(args: &Args) {
              "OK")
         });
 
-        // NORMAL TESTING ------------------------------------------------------
-        let normal_test = sub_task_runner.run(NORMAL_TEST, || {
-            let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
-            util::make_dir(&commit_dir);
-            (cargo_test(&cargo_dir,
-                        &commit_dir,
-                        &target_normal_dir,
-                        IncrementalOptions::None),
-             "OK")
-        });
-
         // INCREMENTAL BUILD ---------------------------------------------------
         let incr_build_result = sub_task_runner.run(INCREMENTAL_BUILD, || {
             let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build", index, short_id));
@@ -205,20 +194,43 @@ pub fn replay(args: &Args) {
             }
         });
 
+        // NORMAL TESTING ------------------------------------------------------
+        let normal_test = sub_task_runner.run(NORMAL_TEST, || {
+            if args.flag_skip_tests {
+                return (None, "skipped");
+            }
+
+            let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
+            util::make_dir(&commit_dir);
+            (Some(cargo_test(&cargo_dir,
+                             &commit_dir,
+                             &target_normal_dir,
+                             IncrementalOptions::None)),
+             "OK")
+        });
+
         // INCREMENTAL TESTING -------------------------------------------------
         let incr_test = sub_task_runner.run(INCREMENTAL_TEST, || {
+            if args.flag_skip_tests {
+                return (None, "skipped");
+            }
+
             let commit_dir = commits_dir.join(format!("{:04}-{}-incr-test", index, short_id));
             util::make_dir(&commit_dir);
-            (cargo_test(&cargo_dir,
-                        &commit_dir,
-                        &target_incr_dir,
-                        incr_options),
+            (Some(cargo_test(&cargo_dir,
+                             &commit_dir,
+                             &target_incr_dir,
+                             incr_options)),
              "OK")
         });
 
 
         // COMPARE TEST RESULTS ------------------------------------------------
         sub_task_runner.run(COMPARE_TESTS, || {
+            if args.flag_skip_tests {
+                return ((), "skipped");
+            }
+
             if normal_test != incr_test {
                 error!("incremental tests differed from normal tests")
             } else {
@@ -294,8 +306,9 @@ pub fn replay(args: &Args) {
         });
 
         // UPDATE STATISTICS
-        tests_passed += normal_test.results.iter().filter(|t| t.status == "ok").count();
-        tests_total += normal_test.results.len();
+        let test_results = normal_test.map(|x| x.results).unwrap_or(vec![]);
+        tests_passed += test_results.iter().filter(|t| t.status == "ok").count();
+        tests_total += test_results.len();
     }
 
     if !args.flag_cli_log {
@@ -488,7 +501,7 @@ fn get_only_session_dir(crate_dir: &Path) -> PathBuf {
     let mut first_dir = None;
 
     for entry in dir_entries {
-        if entry.is_dir() {
+        if entry.is_dir() && is_finalized(&entry) {
             dirs_found += 1;
             if first_dir.is_none() {
                 first_dir = Some(entry);
@@ -510,7 +523,14 @@ fn get_only_session_dir(crate_dir: &Path) -> PathBuf {
                dir_name)
     }
 
-    first_dir
+    return first_dir;
+
+    fn is_finalized(path: &Path) -> bool {
+        !path.file_name()
+             .map(|p| p.to_string_lossy())
+             .unwrap_or(::std::borrow::Cow::Borrowed(""))
+             .ends_with("-working")
+    }
 }
 
 // Compare two files byte-by-byte. The function aborts if it finds a difference.
