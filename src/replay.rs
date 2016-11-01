@@ -3,9 +3,11 @@ use regex::Regex;
 use std::collections::BTreeSet;
 use std::env;
 use std::io::prelude::*;
+use std::io::{self, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+
 
 use super::Args;
 use super::dfs;
@@ -150,6 +152,11 @@ pub fn replay(args: &Args) {
 
         sub_task_runner.run(CHECKOUT, || {
             util::checkout_commit(repo, commit);
+            if args.flag_no_debuginfo {
+                if let Err(err) = inject_no_debug_into_cargo_toml(&cargo_dir) {
+                    error!("error while injecting no_debug into Cargo.toml: {}", err)
+                }
+            }
             ((), "OK")
         });
 
@@ -309,6 +316,12 @@ pub fn replay(args: &Args) {
         let test_results = normal_test.map(|x| x.results).unwrap_or(vec![]);
         tests_passed += test_results.iter().filter(|t| t.status == "ok").count();
         tests_total += test_results.len();
+
+        if args.flag_no_debuginfo {
+            // If we injected `debug = false` into the Cargo.toml, we better
+            // reset the repo so it is clean for the next iteration.
+            util::reset_repo(repo, commit);
+        }
     }
 
     if !args.flag_cli_log {
@@ -628,3 +641,37 @@ impl<'a> SubTaskRunner<'a> {
         result
     }
 }
+
+// This function injects a [profile.dev] into the given Cargo.toml that
+// disables debuginfo. For now, it will just fail if there already is a
+// [profile.dev] section.
+fn inject_no_debug_into_cargo_toml(cargo_dir: &Path) -> io::Result<()> {
+
+    let cargo_toml_path = cargo_dir.join("Cargo.toml");
+
+    let mut file = try!(OpenOptions::new()
+                                    .read(true)
+                                    .write(true)
+                                    .open(&cargo_toml_path));
+
+    let mut contents = String::new();
+    try!(file.read_to_string(&mut contents));
+
+    if contents.contains("[profile.dev]") {
+        let msg = format!("Cargo.toml already contains [profile.dev]: {}",
+                           cargo_toml_path.display());
+        return Err(io::Error::new(io::ErrorKind::Other, msg));
+    }
+
+    contents.push_str("\n");
+    contents.push_str("[profile.dev]\n");
+    contents.push_str("debug = false\n");
+    contents.push_str("\n");
+
+    try!(file.seek(SeekFrom::Start(0)));
+    try!(file.write_all((&contents[..]).as_bytes()));
+
+    Ok(())
+}
+
+

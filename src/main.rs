@@ -45,11 +45,12 @@ before execution begins so don't supply a directory with valuable
 contents. =)
 
 Options:
-    --cargo CARGO      path to Cargo.toml [default: Cargo.toml]
-    --work-dir DIR     directory where we can do our work [default: work]
-    --just-current     track just the current projection incrementally, not all deps
-    --cli-log          print all sub-process output instead of writing to files
-    --skip-tests       do not run tests, just compare compilation artifacts
+    --cargo CARGO           path to Cargo.toml [default: Cargo.toml]
+    --work-dir DIR          directory where we can do our work [default: work]
+    --just-current          track just the current projection incrementally, not all deps
+    --cli-log               print all sub-process output instead of writing to files
+    --skip-tests            do not run tests, just compare compilation artifacts
+    --no-debuginfo          compile without debuginfo whe comparing artifacts
 ";
 
 // dead code allowed for now
@@ -65,6 +66,7 @@ pub struct Args {
     flag_just_current: bool,
     flag_cli_log: bool,
     flag_skip_tests: bool,
+    flag_no_debuginfo: bool,
 }
 
 macro_rules! error {

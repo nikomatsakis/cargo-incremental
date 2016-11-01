@@ -1,5 +1,5 @@
 use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status,
-           STATUS_IGNORED};
+           STATUS_IGNORED, ResetType};
 use git2::build::CheckoutBuilder;
 use std::fs;
 use std::io;
@@ -183,6 +183,15 @@ pub fn check_clean(repo: &Repository) {
     }
     if errors > 0 {
         error!("cannot run with a dirty repository; clean it first");
+    }
+}
+
+pub fn reset_repo(repo: &Repository, commit: &Commit) {
+    let mut cb = CheckoutBuilder::new();
+    if let Err(err) = repo.reset(commit.as_object(),
+                                 ResetType::Hard,
+                                 Some(&mut cb)) {
+        error!("encountered error while resetting repo: {}", err)
     }
 }
 
