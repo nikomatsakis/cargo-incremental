@@ -25,7 +25,7 @@ pub enum IncrementalOptions<'p> {
     CurrentProject(&'p Path),
 }
 
-#[derive(Eq, Debug)]
+#[derive(Eq, Debug, Clone)]
 pub struct BuildResult {
     pub success: bool,
     pub messages: Vec<Message>,
@@ -39,20 +39,28 @@ impl PartialEq for BuildResult {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Message {
     pub kind: String,
     pub message: String,
     pub location: String,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Eq, Debug, Clone)]
 pub struct TestResult {
     pub success: bool,
     pub results: Vec<TestCaseResult>,
+    pub raw_output: Output,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+impl PartialEq for TestResult {
+    fn eq(&self, other: &TestResult) -> bool {
+        self.success == other.success &&
+        self.results == other.results
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone)]
 pub struct TestCaseResult {
     pub test_name: String,
     pub status: String,

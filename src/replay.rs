@@ -193,7 +193,7 @@ pub fn replay(args: &Args) {
                 util::print_output(&normal_build_result.raw_output);
 
                 println!("\nOUTPUT OF INCREMENTAL BUILD:\n");
-                util::print_output(&normal_build_result.raw_output);
+                util::print_output(&incr_build_result.raw_output);
 
                 error!("incremental build differed from normal build")
             } else {
@@ -215,6 +215,7 @@ pub fn replay(args: &Args) {
                              IncrementalOptions::None)),
              "OK")
         });
+
 
         // INCREMENTAL TESTING -------------------------------------------------
         let incr_test = sub_task_runner.run(INCREMENTAL_TEST, || {
@@ -238,7 +239,16 @@ pub fn replay(args: &Args) {
                 return ((), "skipped");
             }
 
+            let normal_test = normal_test.clone().unwrap();
+            let incr_test = incr_test.unwrap();
+
             if normal_test != incr_test {
+                println!("OUTPUT OF NORMAL TESTS:\n");
+                util::print_output(&normal_test.raw_output);
+
+                println!("\nOUTPUT OF INCREMENTAL TESTS:\n");
+                util::print_output(&incr_test.raw_output);
+
                 error!("incremental tests differed from normal tests")
             } else {
                 ((), "OK")
@@ -414,6 +424,7 @@ fn cargo_test(cargo_dir: &Path,
     TestResult {
         success: output.status.success(),
         results: test_results,
+        raw_output: output,
     }
 }
 
