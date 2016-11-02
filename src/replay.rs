@@ -315,8 +315,14 @@ pub fn replay(args: &Args) {
 
                 // CHECK THAT REGULAR AND FROM-SCRATCH INCREMENTAL COMPILATION YIELD THE
                 // SAME RESULTS
-                compare_incr_comp_dirs(&incr_from_scratch_dir, &incr_dir);
-                ((), "OK")
+                match compare_incr_comp_dirs(&incr_from_scratch_dir, &incr_dir) {
+                    Ok(()) => ((), "OK"),
+                    Err(err) => {
+                        error!("{}\nTo reproduce execute: {}",
+                               err,
+                               args.to_cli_command())
+                    }
+                }
             } else {
                 ((), "skipped")
             }
@@ -435,7 +441,9 @@ fn cargo_test(cargo_dir: &Path,
 // - For each pair of crate directories, make sure they are equivalent
 //
 // The function aborts if it finds a difference.
-fn compare_incr_comp_dirs(reference_dir: &Path, tested_dir: &Path) {
+fn compare_incr_comp_dirs(reference_dir: &Path,
+                          tested_dir: &Path)
+                          -> Result<(), String> {
 
     // The cache directory contains a sub-directory for each crate
 
@@ -448,16 +456,23 @@ fn compare_incr_comp_dirs(reference_dir: &Path, tested_dir: &Path) {
         let crate_dir_to_test = tested_crate_dirs.iter().find(|dir| {
             let crate_id = dir.file_name().unwrap();
             crate_id == reference_crate_id
-        }).unwrap_or_else(|| {
-            error!("no cache directory found for crate `{}`",
-                   reference_crate_id.to_string_lossy())
         });
 
-        let reference_session_dir = get_only_session_dir(&reference_crate_dir);
-        let test_session_dir = get_only_session_dir(&crate_dir_to_test);
+        let crate_dir_to_test = match crate_dir_to_test {
+            Some(cd) => cd,
+            None => {
+                return Err(format!("no cache directory found for crate `{}`",
+                                   reference_crate_id.to_string_lossy()));
+            }
+        };
 
-        compare_incr_comp_session_dirs(&reference_session_dir, &test_session_dir);
+        let reference_session_dir = try!(get_only_session_dir(&reference_crate_dir));
+        let test_session_dir = try!(get_only_session_dir(&crate_dir_to_test));
+
+        try!(compare_incr_comp_session_dirs(&reference_session_dir, &test_session_dir));
     }
+
+    Ok(())
 }
 
 // Compare two incr. comp. session directories:
@@ -468,7 +483,8 @@ fn compare_incr_comp_dirs(reference_dir: &Path, tested_dir: &Path) {
 //
 // The function aborts if it finds a difference.
 fn compare_incr_comp_session_dirs(reference_crate_dir: &Path,
-                                  crate_dir_to_test: &Path) {
+                                  crate_dir_to_test: &Path)
+                                  -> Result<(), String> {
 
     let ref_dir_entries = util::dir_entries(reference_crate_dir);
     let test_dir_entries = util::dir_entries(crate_dir_to_test);
@@ -499,7 +515,7 @@ fn compare_incr_comp_session_dirs(reference_crate_dir: &Path,
             message.push_str(&format!(" - {}\n", name));
         }
 
-        error!("{}", message)
+        return Err(message);
     }
 
     for file_name in ref_dir_file_names.iter() {
@@ -510,15 +526,17 @@ fn compare_incr_comp_session_dirs(reference_crate_dir: &Path,
             let ref_file = reference_crate_dir.join(file_name);
             let test_file = crate_dir_to_test.join(file_name);
 
-            compare_files(&ref_file, &test_file);
+            try!(compare_files(&ref_file, &test_file));
         }
     }
+
+    Ok(())
 }
 
 // From a crate-directory within the incremental compilation directory, get the
 // sole session directory in there. If there is more than one directory,
 // something is wrong and the function will abort.
-fn get_only_session_dir(crate_dir: &Path) -> PathBuf {
+fn get_only_session_dir(crate_dir: &Path) -> Result<PathBuf, String> {
     let dir_entries = util::dir_entries(crate_dir);
 
     let mut dirs_found = 0;
@@ -534,20 +552,21 @@ fn get_only_session_dir(crate_dir: &Path) -> PathBuf {
     }
 
     if dirs_found != 1 {
-        error!("Expected to find exactly one incr. comp. session directory in \
-                `{}` but found {}",
-               crate_dir.display(), dirs_found)
+        return Err(format!("Expected to find exactly one incr. comp. session \
+                            directory in `{}` but found {}",
+                           crate_dir.display(),
+                           dirs_found));
     }
 
     let first_dir = first_dir.unwrap();
     let dir_name = first_dir.file_name().unwrap().to_string_lossy().into_owned();
 
     if !dir_name.starts_with("s-") {
-        error!("incr. comp. session directory has unexpected name `{}`",
-               dir_name)
+        return Err(format!("incr. comp. session directory has unexpected name `{}`",
+                           dir_name));
     }
 
-    return first_dir;
+    return Ok(first_dir);
 
     fn is_finalized(path: &Path) -> bool {
         !path.file_name()
@@ -558,36 +577,28 @@ fn get_only_session_dir(crate_dir: &Path) -> PathBuf {
 }
 
 // Compare two files byte-by-byte. The function aborts if it finds a difference.
-fn compare_files(file1_path: &Path, file2_path: &Path) {
+fn compare_files(file1_path: &Path, file2_path: &Path) -> Result<(), String> {
 
-    let mut file1 = File::open(file1_path).unwrap_or_else(|err| {
-        error!("Could not open file `{}` for comparison: {}",
-               file1_path.display(),
-               err)
-    });
+    let mut file1 = try!(File::open(file1_path).map_err(|err| {
+        format!("Could not open file `{}` for comparison: {}", file1_path.display(), err)
+    }));
 
-    let mut file2 = File::open(file2_path).unwrap_or_else(|err| {
-        error!("Could not open file `{}` for comparison: {}",
-               file2_path.display(),
-               err)
-    });
+    let mut file2 = try!(File::open(file2_path).map_err(|err| {
+        format!("Could not open file `{}` for comparison: {}", file2_path.display(), err)
+    }));
 
-    let file1_meta = file1.metadata().unwrap_or_else(|err| {
-        error!("Could get file metadata of `{}` for comparison: {}",
-               file1_path.display(),
-               err)
-    });
+    let file1_meta = try!(file1.metadata().map_err(|err| {
+        format!("Could get file metadata of `{}` for comparison: {}", file1_path.display(), err)
+    }));
 
-    let file2_meta = file2.metadata().unwrap_or_else(|err| {
-        error!("Could get file metadata of `{}` for comparison: {}",
-               file2_path.display(),
-               err)
-    });
+    let file2_meta = try!(file2.metadata().map_err(|err| {
+        format!("Could get file metadata of `{}` for comparison: {}", file2_path.display(), err)
+    }));
 
     if file1_meta.len() != file2_meta.len() {
-        error!("Files `{}` and `{}` have different length",
-               file1_path.display(),
-               file2_path.display())
+        return Err(format!("Files `{}` and `{}` have different length",
+                           file1_path.display(),
+                           file2_path.display()));
     }
 
     let mut bytes_left = file1_meta.len() as usize;
@@ -602,13 +613,15 @@ fn compare_files(file1_path: &Path, file2_path: &Path) {
         file2.read_exact(&mut buf2[0 .. bytes_to_read]).unwrap();
 
         if &buf1[0 .. bytes_to_read] != &buf2[0 .. bytes_to_read] {
-            error!("Files `{}` and `{}` have different content",
-                   file1_path.display(),
-                   file2_path.display())
+            return Err(format!("Files `{}` and `{}` have different content",
+                               file1_path.display(),
+                               file2_path.display()));
         }
 
         bytes_left -= bytes_to_read;
     }
+
+    Ok(())
 }
 
 
@@ -684,5 +697,3 @@ fn inject_no_debug_into_cargo_toml(cargo_dir: &Path) -> io::Result<()> {
 
     Ok(())
 }
-
-
