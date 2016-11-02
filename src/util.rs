@@ -1,5 +1,5 @@
 use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status,
-           STATUS_IGNORED};
+           STATUS_IGNORED, ResetType};
 use git2::build::CheckoutBuilder;
 use std::fs;
 use std::io;
@@ -25,7 +25,7 @@ pub enum IncrementalOptions<'p> {
     CurrentProject(&'p Path),
 }
 
-#[derive(Eq, Debug)]
+#[derive(Eq, Debug, Clone)]
 pub struct BuildResult {
     pub success: bool,
     pub messages: Vec<Message>,
@@ -39,20 +39,28 @@ impl PartialEq for BuildResult {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Message {
     pub kind: String,
     pub message: String,
     pub location: String,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Eq, Debug, Clone)]
 pub struct TestResult {
     pub success: bool,
     pub results: Vec<TestCaseResult>,
+    pub raw_output: Output,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+impl PartialEq for TestResult {
+    fn eq(&self, other: &TestResult) -> bool {
+        self.success == other.success &&
+        self.results == other.results
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone)]
 pub struct TestCaseResult {
     pub test_name: String,
     pub status: String,
@@ -183,6 +191,15 @@ pub fn check_clean(repo: &Repository) {
     }
     if errors > 0 {
         error!("cannot run with a dirty repository; clean it first");
+    }
+}
+
+pub fn reset_repo(repo: &Repository, commit: &Commit) {
+    let mut cb = CheckoutBuilder::new();
+    if let Err(err) = repo.reset(commit.as_object(),
+                                 ResetType::Hard,
+                                 Some(&mut cb)) {
+        error!("encountered error while resetting repo: {}", err)
     }
 }
 

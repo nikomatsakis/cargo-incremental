@@ -3,9 +3,11 @@ use regex::Regex;
 use std::collections::BTreeSet;
 use std::env;
 use std::io::prelude::*;
+use std::io::{self, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+
 
 use super::Args;
 use super::dfs;
@@ -15,9 +17,9 @@ use super::util::{cargo_build, CompilationStats, IncrementalOptions, TestResult,
 
 const CHECKOUT: &'static str = "checkout";
 const NORMAL_BUILD: &'static str = "normal build";
+const INCREMENTAL_BUILD: &'static str = "incremental build";
 const COMPARE_BUILDS: &'static str = "compare incr/normal builds";
 const NORMAL_TEST: &'static str = "normal test";
-const INCREMENTAL_BUILD: &'static str = "incremental build";
 const INCREMENTAL_TEST: &'static str = "incremental test";
 const COMPARE_TESTS: &'static str = "compare incr/normal tests";
 const INCREMENTAL_BUILD_NO_CHANGE: &'static str = "incremental build / no change";
@@ -25,9 +27,9 @@ const INCREMENTAL_BUILD_NO_CACHE: &'static str = "incremental build / no cache";
 
 const STAGES: &'static [&'static str] = &[CHECKOUT,
                                           NORMAL_BUILD,
-                                          NORMAL_TEST,
                                           INCREMENTAL_BUILD,
                                           COMPARE_BUILDS,
+                                          NORMAL_TEST,
                                           INCREMENTAL_TEST,
                                           COMPARE_TESTS,
                                           INCREMENTAL_BUILD_NO_CHANGE,
@@ -150,6 +152,11 @@ pub fn replay(args: &Args) {
 
         sub_task_runner.run(CHECKOUT, || {
             util::checkout_commit(repo, commit);
+            if args.flag_no_debuginfo {
+                if let Err(err) = inject_no_debug_into_cargo_toml(&cargo_dir) {
+                    error!("error while injecting no_debug into Cargo.toml: {}", err)
+                }
+            }
             ((), "OK")
         });
 
@@ -163,17 +170,6 @@ pub fn replay(args: &Args) {
                          IncrementalOptions::None,
                          &mut stats_normal,
                          !args.flag_cli_log),
-             "OK")
-        });
-
-        // NORMAL TESTING ------------------------------------------------------
-        let normal_test = sub_task_runner.run(NORMAL_TEST, || {
-            let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
-            util::make_dir(&commit_dir);
-            (cargo_test(&cargo_dir,
-                        &commit_dir,
-                        &target_normal_dir,
-                        IncrementalOptions::None),
              "OK")
         });
 
@@ -197,7 +193,7 @@ pub fn replay(args: &Args) {
                 util::print_output(&normal_build_result.raw_output);
 
                 println!("\nOUTPUT OF INCREMENTAL BUILD:\n");
-                util::print_output(&normal_build_result.raw_output);
+                util::print_output(&incr_build_result.raw_output);
 
                 error!("incremental build differed from normal build")
             } else {
@@ -205,21 +201,54 @@ pub fn replay(args: &Args) {
             }
         });
 
+        // NORMAL TESTING ------------------------------------------------------
+        let normal_test = sub_task_runner.run(NORMAL_TEST, || {
+            if args.flag_skip_tests {
+                return (None, "skipped");
+            }
+
+            let commit_dir = commits_dir.join(format!("{:04}-{}-normal-test", index, short_id));
+            util::make_dir(&commit_dir);
+            (Some(cargo_test(&cargo_dir,
+                             &commit_dir,
+                             &target_normal_dir,
+                             IncrementalOptions::None)),
+             "OK")
+        });
+
+
         // INCREMENTAL TESTING -------------------------------------------------
         let incr_test = sub_task_runner.run(INCREMENTAL_TEST, || {
+            if args.flag_skip_tests {
+                return (None, "skipped");
+            }
+
             let commit_dir = commits_dir.join(format!("{:04}-{}-incr-test", index, short_id));
             util::make_dir(&commit_dir);
-            (cargo_test(&cargo_dir,
-                        &commit_dir,
-                        &target_incr_dir,
-                        incr_options),
+            (Some(cargo_test(&cargo_dir,
+                             &commit_dir,
+                             &target_incr_dir,
+                             incr_options)),
              "OK")
         });
 
 
         // COMPARE TEST RESULTS ------------------------------------------------
         sub_task_runner.run(COMPARE_TESTS, || {
+            if args.flag_skip_tests {
+                return ((), "skipped");
+            }
+
+            let normal_test = normal_test.clone().unwrap();
+            let incr_test = incr_test.unwrap();
+
             if normal_test != incr_test {
+                println!("OUTPUT OF NORMAL TESTS:\n");
+                util::print_output(&normal_test.raw_output);
+
+                println!("\nOUTPUT OF INCREMENTAL TESTS:\n");
+                util::print_output(&incr_test.raw_output);
+
                 error!("incremental tests differed from normal tests")
             } else {
                 ((), "OK")
@@ -294,8 +323,15 @@ pub fn replay(args: &Args) {
         });
 
         // UPDATE STATISTICS
-        tests_passed += normal_test.results.iter().filter(|t| t.status == "ok").count();
-        tests_total += normal_test.results.len();
+        let test_results = normal_test.map(|x| x.results).unwrap_or(vec![]);
+        tests_passed += test_results.iter().filter(|t| t.status == "ok").count();
+        tests_total += test_results.len();
+
+        if args.flag_no_debuginfo {
+            // If we injected `debug = false` into the Cargo.toml, we better
+            // reset the repo so it is clean for the next iteration.
+            util::reset_repo(repo, commit);
+        }
     }
 
     if !args.flag_cli_log {
@@ -388,6 +424,7 @@ fn cargo_test(cargo_dir: &Path,
     TestResult {
         success: output.status.success(),
         results: test_results,
+        raw_output: output,
     }
 }
 
@@ -488,7 +525,7 @@ fn get_only_session_dir(crate_dir: &Path) -> PathBuf {
     let mut first_dir = None;
 
     for entry in dir_entries {
-        if entry.is_dir() {
+        if entry.is_dir() && is_finalized(&entry) {
             dirs_found += 1;
             if first_dir.is_none() {
                 first_dir = Some(entry);
@@ -510,7 +547,14 @@ fn get_only_session_dir(crate_dir: &Path) -> PathBuf {
                dir_name)
     }
 
-    first_dir
+    return first_dir;
+
+    fn is_finalized(path: &Path) -> bool {
+        !path.file_name()
+             .map(|p| p.to_string_lossy())
+             .unwrap_or(::std::borrow::Cow::Borrowed(""))
+             .ends_with("-working")
+    }
 }
 
 // Compare two files byte-by-byte. The function aborts if it finds a difference.
@@ -608,3 +652,37 @@ impl<'a> SubTaskRunner<'a> {
         result
     }
 }
+
+// This function injects a [profile.dev] into the given Cargo.toml that
+// disables debuginfo. For now, it will just fail if there already is a
+// [profile.dev] section.
+fn inject_no_debug_into_cargo_toml(cargo_dir: &Path) -> io::Result<()> {
+
+    let cargo_toml_path = cargo_dir.join("Cargo.toml");
+
+    let mut file = try!(OpenOptions::new()
+                                    .read(true)
+                                    .write(true)
+                                    .open(&cargo_toml_path));
+
+    let mut contents = String::new();
+    try!(file.read_to_string(&mut contents));
+
+    if contents.contains("[profile.dev]") {
+        let msg = format!("Cargo.toml already contains [profile.dev]: {}",
+                           cargo_toml_path.display());
+        return Err(io::Error::new(io::ErrorKind::Other, msg));
+    }
+
+    contents.push_str("\n");
+    contents.push_str("[profile.dev]\n");
+    contents.push_str("debug = false\n");
+    contents.push_str("\n");
+
+    try!(file.seek(SeekFrom::Start(0)));
+    try!(file.write_all((&contents[..]).as_bytes()));
+
+    Ok(())
+}
+
+
