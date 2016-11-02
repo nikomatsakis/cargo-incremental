@@ -150,6 +150,10 @@ pub fn replay(args: &Args) {
             total_commit_count: commits.len(),
         };
 
+        if args.flag_cli_log {
+            println!("\nTESTING COMMIT {} ({} of {})", short_id, index + 1, commits.len());
+        }
+
         sub_task_runner.run(CHECKOUT, || {
             util::checkout_commit(repo, commit);
             if args.flag_no_debuginfo {
@@ -639,14 +643,14 @@ impl<'a> SubTaskRunner<'a> {
         where F: FnOnce() -> (T, &'static str)
     {
         let stage_index = STAGES.iter().position(|&x| x == task_label).unwrap();
-        let task_title = &format!("{} ({})", STAGES[stage_index], self.commit_id);
+
         if self.cli_log {
             let stdout = ::std::io::stdout();
             let mut stdout = stdout.lock();
-            write!(stdout, "{}", task_title).unwrap();
-            write!(stdout, " ... ").unwrap();
+            write!(stdout, " - {} ... ", STAGES[stage_index]).unwrap();
             stdout.flush().unwrap();
         } else {
+            let task_title = &format!("{} ({})", STAGES[stage_index], self.commit_id);
             self.progress_bar.set_job_title(task_title);
         }
 
