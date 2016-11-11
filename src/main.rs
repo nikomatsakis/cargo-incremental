@@ -55,7 +55,7 @@ Options:
 
 // dead code allowed for now
 #[allow(dead_code)]
-#[derive(RustcDecodable)]
+#[derive(RustcDecodable, Clone)]
 pub struct Args {
     cmd_build: bool,
     cmd_replay: bool,
@@ -67,6 +67,48 @@ pub struct Args {
     flag_cli_log: bool,
     flag_skip_tests: bool,
     flag_no_debuginfo: bool,
+}
+
+impl Args {
+    pub fn to_cli_command(&self) -> String {
+        use std::fmt::Write;
+
+        let mut cmd = String::from("cargo-incremental");
+
+        if self.cmd_replay {
+            cmd.push_str(" replay");
+
+            if !self.flag_cargo.is_empty() {
+                write!(cmd, " --cargo {}", self.flag_cargo).unwrap();
+            }
+
+            if !self.flag_work_dir.is_empty() {
+                write!(cmd, " --work-dir {}", self.flag_work_dir).unwrap();
+            }
+
+            if self.flag_just_current {
+                cmd.push_str(" --just-current");
+            }
+
+            if self.flag_cli_log {
+                cmd.push_str(" --cli-log");
+            }
+
+            if self.flag_skip_tests {
+                cmd.push_str(" --skip-tests");
+            }
+
+            if self.flag_no_debuginfo {
+                cmd.push_str(" --no-debuginfo");
+            }
+
+            write!(cmd, " {}", self.arg_revisions).unwrap();
+
+            return cmd;
+        }
+
+        unimplemented!()
+    }
 }
 
 macro_rules! error {
@@ -100,3 +142,57 @@ mod build;
 mod dfs;
 mod replay;
 mod util;
+
+#[test]
+fn test_args_to_cli_command() {
+    let args = Args {
+        cmd_build: false,
+        cmd_replay: true,
+        arg_arguments: vec![],
+        flag_cargo: "".to_string(),
+        arg_revisions: "master~1..master".to_string(),
+        flag_work_dir: "".to_string(),
+        flag_just_current: false,
+        flag_cli_log: false,
+        flag_skip_tests: false,
+        flag_no_debuginfo: false,
+    };
+
+    assert_eq!(args.to_cli_command(), "cargo-incremental replay master~1..master");
+
+    let cargo = Args {
+        flag_cargo: "test-cargo".to_string(),
+        .. args.clone()
+    };
+    assert_eq!(cargo.to_cli_command(), "cargo-incremental replay --cargo test-cargo master~1..master");
+
+    let work_dir = Args {
+        flag_work_dir: "/tmp/ciw".to_string(),
+        .. args.clone()
+    };
+    assert_eq!(work_dir.to_cli_command(), "cargo-incremental replay --work-dir /tmp/ciw master~1..master");
+
+    let just_current = Args {
+        flag_just_current: true,
+        .. args.clone()
+    };
+    assert_eq!(just_current.to_cli_command(), "cargo-incremental replay --just-current master~1..master");
+
+    let cli_log = Args {
+        flag_cli_log: true,
+        .. args.clone()
+    };
+    assert_eq!(cli_log.to_cli_command(), "cargo-incremental replay --cli-log master~1..master");
+
+    let skip_tests = Args {
+        flag_skip_tests: true,
+        .. args.clone()
+    };
+    assert_eq!(skip_tests.to_cli_command(), "cargo-incremental replay --skip-tests master~1..master");
+
+    let no_debuginfo = Args {
+        flag_no_debuginfo: true,
+        .. args.clone()
+    };
+    assert_eq!(no_debuginfo.to_cli_command(), "cargo-incremental replay --no-debuginfo master~1..master");
+}
