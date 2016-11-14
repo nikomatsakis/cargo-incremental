@@ -309,13 +309,16 @@ pub fn replay(args: &Args) {
                 } else {
                     IncrementalOptions::AllDeps(&incr_from_scratch_dir)
                 };
-                let _ = cargo_build(&cargo_dir,
-                                    &commit_dir,
-                                    &target_incr_from_scratch_dir,
-                                    incr_from_scratch_options,
-                                    &mut stats_incr_from_scratch,
-                                    !args.flag_cli_log);
-
+                let from_scratch_result = cargo_build(&cargo_dir,
+                                                      &commit_dir,
+                                                      &target_incr_from_scratch_dir,
+                                                      incr_from_scratch_options,
+                                                      &mut stats_incr_from_scratch,
+                                                      !args.flag_cli_log);
+                if !from_scratch_result.success {
+                    util::print_output(&from_scratch_result.raw_output);
+                    error!("error during (incr-from-scratch) build!");
+                }
 
                 // CHECK THAT REGULAR AND FROM-SCRATCH INCREMENTAL COMPILATION YIELD THE
                 // SAME RESULTS
@@ -470,8 +473,15 @@ fn compare_incr_comp_dirs(reference_dir: &Path,
             }
         };
 
-        let reference_session_dir = try!(get_only_session_dir(&reference_crate_dir));
-        let test_session_dir = try!(get_only_session_dir(&crate_dir_to_test));
+        let reference_session_dir = try!(get_only_session_dir(&reference_crate_dir, None));
+
+        // We have the reference session directory, now we want our test session
+        // directory. It must be the one with exactly the same SVH as the
+        // reference directory.
+        let reference_session_dir_name = util::path_file_name(&reference_session_dir);
+        let index = reference_session_dir_name.rfind("-").unwrap() + 1;
+        let svh = Some(&reference_session_dir_name[index..]);
+        let test_session_dir = try!(get_only_session_dir(&crate_dir_to_test, svh));
 
         try!(compare_incr_comp_session_dirs(&reference_session_dir, &test_session_dir));
     }
@@ -540,43 +550,58 @@ fn compare_incr_comp_session_dirs(reference_crate_dir: &Path,
 // From a crate-directory within the incremental compilation directory, get the
 // sole session directory in there. If there is more than one directory,
 // something is wrong and the function will abort.
-fn get_only_session_dir(crate_dir: &Path) -> Result<PathBuf, String> {
+fn get_only_session_dir(crate_dir: &Path,
+                        svh: Option<&str>)
+                        -> Result<PathBuf, String> {
     let dir_entries = util::dir_entries(crate_dir);
 
-    let mut dirs_found = 0;
-    let mut first_dir = None;
-
-    for entry in dir_entries {
-        if entry.is_dir() && is_finalized(&entry) {
-            dirs_found += 1;
-            if first_dir.is_none() {
-                first_dir = Some(entry);
+    return if let Some(svh) = svh {
+        for entry in dir_entries {
+            if entry.is_dir() {
+                let dir_name = util::path_file_name(&entry);
+                if dir_name.ends_with(svh) {
+                    try!(check_well_formed_session_dir_name(&dir_name));
+                    return Ok(entry);
+                }
             }
         }
-    }
 
-    if dirs_found != 1 {
-        return Err(format!("Expected to find exactly one incr. comp. session \
-                            directory in `{}` but found {}",
-                           crate_dir.display(),
-                           dirs_found));
-    }
+        Err(format!("Could not find session dir with SVH `{}` in `{}`.",
+                    svh,
+                    crate_dir.display()))
+    } else {
+        let mut dirs_found = 0;
+        let mut first_dir = None;
 
-    let first_dir = first_dir.unwrap();
-    let dir_name = first_dir.file_name().unwrap().to_string_lossy().into_owned();
+        for entry in dir_entries {
+            if entry.is_dir() {
+                dirs_found += 1;
+                if first_dir.is_none() {
+                    first_dir = Some(entry);
+                }
+            }
+        }
 
-    if !dir_name.starts_with("s-") {
-        return Err(format!("incr. comp. session directory has unexpected name `{}`",
-                           dir_name));
-    }
+        if dirs_found != 1 {
+            return Err(format!("Expected to find exactly one incr. comp. \
+                                session directory in `{}` but found {}",
+                               crate_dir.display(),
+                               dirs_found));
+        }
 
-    return Ok(first_dir);
+        let first_dir = first_dir.unwrap();
+        let dir_name = util::path_file_name(&first_dir);
+        try!(check_well_formed_session_dir_name(&dir_name));
+        Ok(first_dir)
+    };
 
-    fn is_finalized(path: &Path) -> bool {
-        !path.file_name()
-             .map(|p| p.to_string_lossy())
-             .unwrap_or(::std::borrow::Cow::Borrowed(""))
-             .ends_with("-working")
+    fn check_well_formed_session_dir_name(dir_name: &str) -> Result<(), String> {
+        if !dir_name.starts_with("s-") {
+            Err(format!("incr. comp. session directory has unexpected name `{}`",
+                         dir_name))
+        } else {
+            Ok(())
+        }
     }
 }
 
