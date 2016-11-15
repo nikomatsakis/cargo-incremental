@@ -375,3 +375,7 @@ pub fn dir_entries(dir: &Path) -> Vec<PathBuf> {
     })
     .collect()
 }
+
+pub fn path_file_name(entry: &Path) -> String {
+    entry.file_name().unwrap().to_string_lossy().into_owned()
+}
