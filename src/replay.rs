@@ -273,6 +273,12 @@ pub fn replay(args: &Args) {
             if incr_build_result.success {
                 let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-full-re-use", index, short_id));
                 util::make_dir(&commit_dir);
+
+                // Delete Cargo's target directory so we don't run into Cargo's
+                // smart re-using.
+                util::remove_dir(&target_incr_dir);
+                util::make_dir(&target_incr_dir);
+
                 let mut full_reuse_stats = CompilationStats::default();
                 assert_eq!(full_reuse_stats.modules_reused, 0);
                 assert_eq!(full_reuse_stats.modules_total, 0);
