@@ -2,7 +2,7 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::io;
 
-use git2::{BranchType, Commit, Reference, Repository, Signature, STATUS_WT_NEW};
+use git2::{self, BranchType, Commit, Reference, Repository, Signature};
 
 use super::Args;
 use super::util;
@@ -39,8 +39,7 @@ pub fn build(args: &Args) {
     reset_branch(repo, "refs/heads/cargo-incremental-build");
 
     // Commit a checkpoint.
-    println!("committing checkpoint");
-    commit_checkpoint(repo);
+    maybe_commit_checkpoint(repo);
 
     // Reset back to the initial head.
     println!("bringing head back to initial state");
@@ -95,7 +94,7 @@ fn check_untracked_rs_files(repo: &Repository) {
 
     let mut errors = 0;
     for status in statuses.iter() {
-        if status.status().intersects(STATUS_WT_NEW) {
+        if status.status().intersects(git2::STATUS_WT_NEW) {
             if let Some(p) = status.path() {
                 if p.ends_with("rs") {
                     let stderr = io::stderr();
@@ -123,7 +122,7 @@ fn create_branch_if_new(repo: &Repository, name: &str, head: &Reference) {
     }
 }
 
-fn commit_checkpoint(repo: &Repository) {
+fn maybe_commit_checkpoint(repo: &Repository) {
     let author = match Signature::now("cargo-incremental", "none") {
         Ok(author) => author,
         Err(e) => error!("failed to create git signature: {}", e),
@@ -162,10 +161,24 @@ fn commit_checkpoint(repo: &Repository) {
         Err(e) => error!("failed to get commit: {}", e),
     };
 
+    // Check if there are actually any changes
+    let last_commit_tree = last_commit_incr.tree().unwrap();
+    if updated_tree.len() == last_commit_tree.len() {
+        let has_changed = updated_tree.iter().any(|entry| {
+            last_commit_tree.get_id(entry.id()).is_none()
+        });
+
+        if !has_changed {
+            println!("not creating new checkpoint since there are no changes");
+            return
+        }
+    }
+
     let mut parents: Vec<&Commit> = Vec::new();
     parents.push(&last_commit_incr);
     let parents = parents;
 
+    println!("committing checkpoint");
     let result = repo.commit(Some("HEAD"),
                              &author,
                              &author,
