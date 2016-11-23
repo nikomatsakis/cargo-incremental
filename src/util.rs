@@ -5,11 +5,14 @@ use std::fs;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use regex::Regex;
 use std::env;
 use std::str::FromStr;
 use std::fs::File;
+use std::thread::{self, JoinHandle};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Default)]
 pub struct CompilationStats {
@@ -262,7 +265,8 @@ pub fn cargo_build(cargo_dir: &Path,
                    target_dir: &Path,
                    incremental: IncrementalOptions,
                    stats: &mut CompilationStats,
-                   should_save_output: bool)
+                   should_save_output: bool,
+                   stream_output: bool)
                    -> BuildResult {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
@@ -290,7 +294,57 @@ pub fn cargo_build(cargo_dir: &Path,
                 .arg("incremental-info");
         }
     }
-    let output = cmd.output();
+
+    let output = if stream_output {
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut process = cmd.spawn().unwrap_or_else(|err| {
+            error!("failed to spawn `cargo build` process: {}", err)
+        });
+
+        let done = Arc::new(AtomicBool::new(false));
+
+        let stdout_reader = spawn_stream_reader(done.clone(),
+                                                process.stdout.take().unwrap(),
+                                                |bytes| {
+                                                    let stdout = io::stdout();
+                                                    let mut stdout = stdout.lock();
+                                                    stdout.write_all(bytes).unwrap();
+                                                });
+
+        let stderr_reader = spawn_stream_reader(done.clone(),
+                                                process.stderr.take().unwrap(),
+                                                |bytes| {
+                                                    let stderr = io::stderr();
+                                                    let mut stderr = stderr.lock();
+                                                    stderr.write_all(bytes).unwrap();
+                                                });
+
+        let exit_status = process.wait().unwrap_or_else(|err| {
+            error!("error while waiting for `cargo build` process to finish: {}",
+                   err)
+        });
+
+        done.store(true, Ordering::SeqCst);
+
+        let stdout = stdout_reader.join().unwrap_or_else(|_| {
+            error!("error while reading child process stdout")
+        });
+
+        let stderr = stderr_reader.join().unwrap_or_else(|_| {
+            error!("error while reading child process stderr")
+        });
+
+        Ok(Output {
+            status: exit_status,
+            stdout: stdout,
+            stderr: stderr,
+        })
+    } else {
+        cmd.output()
+    };
+
     let output = match output {
         Ok(output) => {
             if should_save_output {
@@ -351,10 +405,41 @@ pub fn cargo_build(cargo_dir: &Path,
         })
         .collect();
 
-    BuildResult {
+    return BuildResult {
         success: output.status.success(),
         messages: messages,
         raw_output: output,
+    };
+
+    fn spawn_stream_reader<S, F>(done_flag: Arc<AtomicBool>,
+                                 mut stream: S,
+                                 forward: F)
+                                 -> JoinHandle<Vec<u8>>
+        where S: Read+Send+'static,
+              F: Fn(&[u8])+Send+'static
+    {
+        thread::spawn(move || {
+            let mut data = Vec::new();
+            let mut buffer = [0u8; 100];
+
+            while !done_flag.load(Ordering::SeqCst) {
+                let byte_count = stream.read(&mut buffer).unwrap_or_else(|_| {
+                    error!("error reading from child process pipe")
+                });
+
+                forward(&buffer[0 .. byte_count]);
+                data.extend(&buffer[0 .. byte_count]);
+            }
+
+            let size_before = data.len();
+            stream.read_to_end(&mut data).unwrap_or_else(|_| {
+                error!("error reading from child process pipe")
+            });
+
+            forward(&data[size_before..]);
+
+            data
+        })
     }
 }
 
