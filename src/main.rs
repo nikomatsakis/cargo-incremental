@@ -51,6 +51,7 @@ Options:
     --cli-log               print all sub-process output instead of writing to files
     --skip-tests            do not run tests, just compare compilation artifacts
     --no-debuginfo          compile without debuginfo whe comparing artifacts
+    --verbose               print more output
 ";
 
 // dead code allowed for now
@@ -67,6 +68,7 @@ pub struct Args {
     flag_cli_log: bool,
     flag_skip_tests: bool,
     flag_no_debuginfo: bool,
+    flag_verbose: bool,
 }
 
 impl Args {
@@ -100,6 +102,10 @@ impl Args {
 
             if self.flag_no_debuginfo {
                 cmd.push_str(" --no-debuginfo");
+            }
+
+            if self.flag_verbose {
+                cmd.push_str(" --verbose");
             }
 
             write!(cmd, " {}", self.arg_revisions).unwrap();
@@ -195,4 +201,10 @@ fn test_args_to_cli_command() {
         .. args.clone()
     };
     assert_eq!(no_debuginfo.to_cli_command(), "cargo-incremental replay --no-debuginfo master~1..master");
+
+    let verbose = Args {
+        flag_verbose: true,
+        .. args.clone()
+    };
+    assert_eq!(verbose.to_cli_command(), "cargo-incremental replay --verbose master~1..master");
 }
