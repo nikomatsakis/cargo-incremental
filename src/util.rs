@@ -13,6 +13,7 @@ use std::fs::File;
 use std::thread::{self, JoinHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 #[derive(Default)]
 pub struct CompilationStats {
@@ -463,4 +464,14 @@ pub fn dir_entries(dir: &Path) -> Vec<PathBuf> {
 
 pub fn path_file_name(entry: &Path) -> String {
     entry.file_name().unwrap().to_string_lossy().into_owned()
+}
+
+pub fn duration_to_string(duration: Duration) -> String {
+    let total_secs = duration.as_secs();
+    let secs = total_secs % 60;
+    let total_mins = total_secs / 60;
+    let mins = total_mins % 60;
+    let hours = total_mins / 60;
+
+    format!("{:02}:{:02}:{:02}", hours, mins, secs)
 }

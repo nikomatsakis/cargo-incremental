@@ -146,6 +146,8 @@ pub fn replay(args: &Args) {
 
     let (mut tests_total, mut tests_passed) = (0, 0);
 
+    let start_time = time::Instant::now();
+
     for (index, commit) in commits.iter().enumerate() {
         let short_id = util::short_id(commit);
         let mut sub_task_runner = SubTaskRunner {
@@ -154,6 +156,7 @@ pub fn replay(args: &Args) {
             commit_index: index,
             cli_log: args.flag_cli_log,
             total_commit_count: commits.len(),
+            global_start_time: start_time,
         };
 
         if args.flag_cli_log {
@@ -682,6 +685,7 @@ struct SubTaskRunner<'a> {
     commit_id: String,
     cli_log: bool,
     total_commit_count: usize,
+    global_start_time: time::Instant,
 }
 
 impl<'a> SubTaskRunner<'a> {
@@ -692,9 +696,14 @@ impl<'a> SubTaskRunner<'a> {
         let stage_index = STAGES.iter().position(|&x| x == task_label).unwrap();
 
         if self.cli_log {
+            let time_stamp = self.global_start_time.elapsed();
+
             let stdout = ::std::io::stdout();
             let mut stdout = stdout.lock();
-            write!(stdout, " - {} ... ", STAGES[stage_index]).unwrap();
+            write!(stdout,
+                   " [{}] {} ... ",
+                   util::duration_to_string(time_stamp),
+                   STAGES[stage_index]).unwrap();
             stdout.flush().unwrap();
         } else {
             let task_title = &format!("{} ({})", STAGES[stage_index], self.commit_id);
