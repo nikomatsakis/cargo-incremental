@@ -10,6 +10,7 @@ dependencies = [
  "progress 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.1.80 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-serialize 0.3.21 (registry+https://github.com/rust-lang/crates.io-index)",
+ "toml 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -273,6 +274,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "rustc-serialize 0.3.21 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "unicode-bidi"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -351,6 +360,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum terminal_size 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "0880afeda6ee26013cd700da56fab09de1ddcd5619369e7bfe1bb28ee5d18085"
 "checksum thread-id 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = "a9539db560102d1cef46b8b78ce737ff0bb64e7e18d35b2a5688f7d097d0ff03"
 "checksum thread_local 0.2.7 (registry+https://github.com/rust-lang/crates.io-index)" = "8576dbbfcaef9641452d5cf0df9b0e7eeab7694956dd33bb61515fb8f18cfdd5"
+"checksum toml 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "736b60249cb25337bc196faa43ee12c705e426f3d55c214d73a4e7be06f92cb4"
 "checksum unicode-bidi 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "c1f7ceb96afdfeedee42bade65a0d585a6a0106f681b6749c8ff4daa8df30b3f"
 "checksum unicode-normalization 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "26643a2f83bac55f1976fb716c10234485f9202dcd65cfbdf9da49867b271172"
 "checksum url 1.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "48ccf7bd87a81b769cf84ad556e034541fb90e1cd6d4bc375c822ed9500cd9d7"

@@ -118,19 +118,28 @@ pub fn replay(args: &Args) {
     // work/incr <-- incremental compilation cache
     // work/from_scratch <-- incremental compilation cache for from-scratch builds
     // work/commits/1231123 <-- output from building 1231123
-    let target_incr_dir = util::absolute_dir_path(&work_dir.join("target-incr"));
     let target_normal_dir = util::absolute_dir_path(&work_dir.join("target-normal"));
-    let target_incr_from_scratch_dir = util::absolute_dir_path(&work_dir.join("target-incr-from-scratch"));
+    let target_incr_dir = util::absolute_dir_path(&work_dir.join("target-incr"));
 
-    let incr_dir = util::absolute_dir_path(&work_dir.join("incr"));
+    // We always use this directory as the incr. comp. cache directory, so we
+    // can always pass the same commandline arguments to Cargo. Cargo does not
+    // know that the -Zincremental flag should have no influence on the crate,
+    // so it will incorporate its value into the -C metadata it passes to rustc,
+    // thus changing the SVH of the crate and making cache dirs incomparable.
+    //
+    // We copy the contents into another directory before overwriting them, so
+    // we can compare later.
+    let incr_comp_workspace = util::absolute_dir_path(&work_dir.join("incr-workspace"));
+
     let incr_options = if args.flag_just_current {
-        IncrementalOptions::CurrentProject(&incr_dir)
+        IncrementalOptions::CurrentProject(&incr_comp_workspace)
     } else {
-        IncrementalOptions::AllDeps(&incr_dir)
+        IncrementalOptions::AllDeps(&incr_comp_workspace)
     };
 
-    let incr_from_scratch_dir = work_dir.join("incr-from-scratch");
-
+    // This is where we copy the contents of incr_comp_workspace before
+    // overwriting them in the from-scratch test
+    let incr_evacuated = util::absolute_dir_path(&work_dir.join("incr-evacuated"));
     let commits_dir = work_dir.join("commits");
     util::make_dir(&commits_dir);
 
@@ -279,10 +288,10 @@ pub fn replay(args: &Args) {
                 let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-full-re-use", index, short_id));
                 util::make_dir(&commit_dir);
 
-                // Delete Cargo's target directory so we don't run into Cargo's
-                // smart re-using.
-                util::remove_dir(&target_incr_dir);
-                util::make_dir(&target_incr_dir);
+                // We run `cargo clean` so we don't get re-use at the Cargo level.
+                util::cargo_clean(&cargo_dir,
+                                  &target_incr_dir,
+                                  incr_options);
 
                 let mut full_reuse_stats = CompilationStats::default();
                 assert_eq!(full_reuse_stats.modules_reused, 0);
@@ -291,7 +300,7 @@ pub fn replay(args: &Args) {
                 let result_no_change = cargo_build(&cargo_dir,
                                                    &commit_dir,
                                                    &target_incr_dir,
-                                                   incr_options, // NOTE: we are using the same cache dir
+                                                   incr_options,
                                                    &mut full_reuse_stats,
                                                    !args.flag_cli_log,
                                                    args.flag_verbose);
@@ -319,20 +328,21 @@ pub fn replay(args: &Args) {
                 let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-from-scratch", index, short_id));
                 util::make_dir(&commit_dir);
                 // We want to do a clean rebuild in incremental mode, so clear the
-                // incremental compilation cache
-                util::remove_dir(&incr_from_scratch_dir);
-                util::make_dir(&incr_from_scratch_dir);
-                util::remove_dir(&target_incr_from_scratch_dir);
-                util::make_dir(&target_incr_from_scratch_dir);
-                let incr_from_scratch_options = if args.flag_just_current {
-                    IncrementalOptions::CurrentProject(&incr_from_scratch_dir)
-                } else {
-                    IncrementalOptions::AllDeps(&incr_from_scratch_dir)
-                };
+                // incremental compilation cache. But before that, we evacuate
+                // its current contents, so we have it around for comparison.
+                util::remove_dir(&incr_evacuated);
+                util::rename_directory(&incr_comp_workspace, &incr_evacuated);
+                // Now create an empty workspace directory again
+                util::make_dir(&incr_comp_workspace);
+
+                util::cargo_clean(&cargo_dir,
+                                  &target_incr_dir,
+                                  incr_options);
+
                 let from_scratch_result = cargo_build(&cargo_dir,
                                                       &commit_dir,
-                                                      &target_incr_from_scratch_dir,
-                                                      incr_from_scratch_options,
+                                                      &target_incr_dir,
+                                                      incr_options,
                                                       &mut stats_incr_from_scratch,
                                                       !args.flag_cli_log,
                                                       args.flag_verbose);
@@ -343,7 +353,7 @@ pub fn replay(args: &Args) {
 
                 // CHECK THAT REGULAR AND FROM-SCRATCH INCREMENTAL COMPILATION YIELD THE
                 // SAME RESULTS
-                match compare_incr_comp_dirs(&incr_from_scratch_dir, &incr_dir) {
+                match compare_incr_comp_dirs(&incr_comp_workspace, &incr_evacuated) {
                     Ok(()) => ((), "OK"),
                     Err(err) => {
                         error!("{}\nTo reproduce execute: {}",

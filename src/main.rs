@@ -3,6 +3,7 @@ extern crate git2;
 extern crate regex;
 extern crate rustc_serialize;
 extern crate progress;
+extern crate toml;
 
 #[macro_use]
 extern crate log;
