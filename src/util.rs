@@ -1,7 +1,6 @@
 use git2::{Commit, Error as Git2Error, ErrorCode, Object, Repository, Status,
            STATUS_IGNORED, ResetType};
 use git2::build::CheckoutBuilder;
-use std::fs;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -9,11 +8,12 @@ use std::process::{Command, Output, Stdio};
 use regex::Regex;
 use std::env;
 use std::str::FromStr;
-use std::fs::File;
+use std::fs::{self, File};
 use std::thread::{self, JoinHandle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use toml;
 
 #[derive(Default)]
 pub struct CompilationStats {
@@ -300,6 +300,8 @@ pub fn cargo_build(cargo_dir: &Path,
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        debug!("{:?}", cmd);
+
         let mut process = cmd.spawn().unwrap_or_else(|err| {
             error!("failed to spawn `cargo build` process: {}", err)
         });
@@ -343,6 +345,7 @@ pub fn cargo_build(cargo_dir: &Path,
             stderr: stderr,
         })
     } else {
+        debug!("{:?}", cmd);
         cmd.output()
     };
 
@@ -444,6 +447,46 @@ pub fn cargo_build(cargo_dir: &Path,
     }
 }
 
+pub fn cargo_clean(cargo_dir: &Path,
+                   target_dir: &Path,
+                   incremental: IncrementalOptions) {
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&cargo_dir);
+    cmd.env("CARGO_TARGET_DIR", target_dir);
+    match incremental {
+        IncrementalOptions::None => {
+            cmd.arg("clean").arg("-v");
+        }
+        IncrementalOptions::AllDeps(_) => {
+            cmd.arg("clean").arg("-v");
+        }
+        IncrementalOptions::CurrentProject(_) => {
+            let cargo_package_name = get_cargo_package_name(cargo_dir)
+                .unwrap_or_else(|err| {
+                    error!("{}", err)
+                });
+
+            cmd.arg("clean")
+                .arg("-v")
+                .arg("-p")
+                .arg(&cargo_package_name);
+        }
+    }
+
+    debug!("{:?}", cmd);
+    match cmd.output() {
+        Ok(output) => {
+            if !output.status.success() {
+                print_output(&output);
+                error!("cargo clean failed");
+            }
+        }
+        Err(err) => {
+            error!("could not execute `cargo clean`: {}", err);
+        }
+    }
+}
+
 pub fn dir_entries(dir: &Path) -> Vec<PathBuf> {
     debug!("dir_entries({})", dir.display());
     let dir_iter = fs::read_dir(dir).unwrap_or_else(|err| {
@@ -474,4 +517,44 @@ pub fn duration_to_string(duration: Duration) -> String {
     let hours = total_mins / 60;
 
     format!("{:02}:{:02}:{:02}", hours, mins, secs)
+}
+
+pub fn get_cargo_package_name(cargo_dir: &Path) -> Result<String, String> {
+    let cargo_toml_path = cargo_dir.join("Cargo.toml");
+    let mut cargo_toml_file = try!(File::open(&cargo_toml_path)
+        .map_err(|err| format!("Error opening `{}`: {}",
+                                cargo_toml_path.display(),
+                                err)));
+    let mut cargo_toml_contents = String::new();
+
+    try!(cargo_toml_file.read_to_string(&mut cargo_toml_contents).
+        map_err(|err| format!("Could not read contents of `{}`: {}",
+                              cargo_toml_path.display(),
+                              err)));
+    let table = toml::Parser::new(&cargo_toml_contents).parse();
+
+    if let Some(table) = table {
+        let package_name = table.get("package")
+                                .unwrap()
+                                .as_table()
+                                .unwrap()
+                                .get("name")
+                                .unwrap()
+                                .as_str()
+                                .unwrap();
+
+        debug!("package name: `{}`", package_name);
+        Ok(package_name.to_owned())
+    } else {
+        Err(format!("Error trying to parse `{}`", cargo_toml_path.display()))
+    }
+}
+
+pub fn rename_directory(old_path: &Path, new_path: &Path) {
+    fs::rename(old_path, new_path).unwrap_or_else(|err| {
+        error!("Could not rename directory from `{}` to `{}`: {}",
+                old_path.display(),
+                new_path.display(),
+                err);
+    });
 }
