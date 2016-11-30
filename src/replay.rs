@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs::{File, OpenOptions};
 use std::time;
-use std::thread;
 
 use super::Args;
 use super::dfs;
@@ -35,11 +34,6 @@ const STAGES: &'static [&'static str] = &[CHECKOUT,
                                           COMPARE_TESTS,
                                           INCREMENTAL_BUILD_NO_CHANGE,
                                           INCREMENTAL_BUILD_NO_CACHE];
-
-// Some file systems (e.g. HFS+ or FAT) record timestamps with rather low
-// resolution, so we have to make sure to modify the test directory in intervals
-// that the file system (and hence Cargo) will be able to handle.
-const MIN_ITERATION_TIME_SECS: u64 = 2;
 
 pub fn replay(args: &Args) {
     assert!(args.cmd_replay);
@@ -182,12 +176,15 @@ pub fn replay(args: &Args) {
             ((), "OK")
         });
 
-        let check_out_time = time::Instant::now();
-
         // NORMAL BUILD --------------------------------------------------------
         let normal_build_result = sub_task_runner.run(NORMAL_BUILD, || {
             let commit_dir = commits_dir.join(format!("{:04}-{}-normal-build", index, short_id));
             util::make_dir(&commit_dir);
+
+            util::cargo_clean(&cargo_dir,
+                              &target_normal_dir,
+                              args.flag_just_current);
+
             (cargo_build(&cargo_dir,
                          &commit_dir,
                          &target_normal_dir,
@@ -202,6 +199,11 @@ pub fn replay(args: &Args) {
         let incr_build_result = sub_task_runner.run(INCREMENTAL_BUILD, || {
             let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build", index, short_id));
             util::make_dir(&commit_dir);
+
+            util::cargo_clean(&cargo_dir,
+                              &target_incr_dir,
+                              args.flag_just_current);
+
             (cargo_build(&cargo_dir,
                          &commit_dir,
                          &target_incr_dir,
@@ -291,7 +293,7 @@ pub fn replay(args: &Args) {
                 // We run `cargo clean` so we don't get re-use at the Cargo level.
                 util::cargo_clean(&cargo_dir,
                                   &target_incr_dir,
-                                  incr_options);
+                                  args.flag_just_current);
 
                 let mut full_reuse_stats = CompilationStats::default();
                 assert_eq!(full_reuse_stats.modules_reused, 0);
@@ -337,7 +339,7 @@ pub fn replay(args: &Args) {
 
                 util::cargo_clean(&cargo_dir,
                                   &target_incr_dir,
-                                  incr_options);
+                                  args.flag_just_current);
 
                 let from_scratch_result = cargo_build(&cargo_dir,
                                                       &commit_dir,
@@ -375,10 +377,6 @@ pub fn replay(args: &Args) {
             // If we injected `debug = false` into the Cargo.toml, we better
             // reset the repo so it is clean for the next iteration.
             util::reset_repo(repo, commit);
-        }
-
-        while check_out_time.elapsed().as_secs() < MIN_ITERATION_TIME_SECS {
-            thread::sleep(time::Duration::from_millis(200));
         }
     }
 
