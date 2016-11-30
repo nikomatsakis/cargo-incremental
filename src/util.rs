@@ -449,28 +449,22 @@ pub fn cargo_build(cargo_dir: &Path,
 
 pub fn cargo_clean(cargo_dir: &Path,
                    target_dir: &Path,
-                   incremental: IncrementalOptions) {
+                   just_current: bool) {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
     cmd.env("CARGO_TARGET_DIR", target_dir);
-    match incremental {
-        IncrementalOptions::None => {
-            cmd.arg("clean").arg("-v");
-        }
-        IncrementalOptions::AllDeps(_) => {
-            cmd.arg("clean").arg("-v");
-        }
-        IncrementalOptions::CurrentProject(_) => {
-            let cargo_package_name = get_cargo_package_name(cargo_dir)
-                .unwrap_or_else(|err| {
-                    error!("{}", err)
-                });
+    if !just_current {
+        cmd.arg("clean").arg("-v");
+    } else {
+        let cargo_package_name = get_cargo_package_name(cargo_dir)
+            .unwrap_or_else(|err| {
+                error!("{}", err)
+            });
 
-            cmd.arg("clean")
-                .arg("-v")
-                .arg("-p")
-                .arg(&cargo_package_name);
-        }
+        cmd.arg("clean")
+            .arg("-v")
+            .arg("-p")
+            .arg(&cargo_package_name);
     }
 
     debug!("{:?}", cmd);
