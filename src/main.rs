@@ -51,6 +51,7 @@ Options:
     --just-current          track just the current projection incrementally, not all deps
     --cli-log               print all sub-process output instead of writing to files
     --skip-tests            do not run tests, just compare compilation artifacts
+    --skip-reuse-check      do not run the full-reuse check
     --no-debuginfo          compile without debuginfo whe comparing artifacts
     --verbose               print more output
 ";
@@ -67,6 +68,7 @@ pub struct Args {
     flag_work_dir: String,
     flag_just_current: bool,
     flag_cli_log: bool,
+    flag_skip_reuse_check: bool,
     flag_skip_tests: bool,
     flag_no_debuginfo: bool,
     flag_verbose: bool,
@@ -99,6 +101,10 @@ impl Args {
 
             if self.flag_skip_tests {
                 cmd.push_str(" --skip-tests");
+            }
+
+            if self.flag_skip_reuse_check {
+                cmd.push_str(" --skip-reuse-check");
             }
 
             if self.flag_no_debuginfo {
@@ -196,6 +202,12 @@ fn test_args_to_cli_command() {
         .. args.clone()
     };
     assert_eq!(skip_tests.to_cli_command(), "cargo-incremental replay --skip-tests master~1..master");
+
+    let skip_reuse_check = Args {
+        flag_skip_reuse_check: true,
+        .. args.clone()
+    };
+    assert_eq!(skip_reuse_check.to_cli_command(), "cargo-incremental replay --skip-reuse-check master~1..master");
 
     let no_debuginfo = Args {
         flag_no_debuginfo: true,
