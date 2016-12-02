@@ -286,7 +286,7 @@ pub fn replay(args: &Args) {
 
         // INCREMENTAL BUILD (FULL RE-USE) -------------------------------------
         sub_task_runner.run(INCREMENTAL_BUILD_NO_CHANGE, || {
-            if incr_build_result.success {
+            if incr_build_result.success && !args.flag_skip_reuse_check {
                 let commit_dir = commits_dir.join(format!("{:04}-{}-incr-build-full-re-use", index, short_id));
                 util::make_dir(&commit_dir);
 
