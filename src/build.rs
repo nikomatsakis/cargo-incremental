@@ -30,20 +30,29 @@ pub fn build(args: &Args) {
 
     // Save the current head.
     let current_head = repo.head().unwrap();
-    println!("head is: {:?}", current_head.shorthand().unwrap());
 
+    if !current_head.is_branch() || current_head.name() == Some("HEAD") {
+        error!("cannot work from detached HEAD. Please check out a local branch.")
+    }
+
+    if current_head.name() == Some("refs/heads/cargo-incremental-build") {
+        error!("current branch already is the tracking branch `cargo-incremental-build`. \
+                Please check out a regular local branch.");
+    }
+
+    println!("head is: {:?}", current_head.shorthand().unwrap());
 
     // Checkout the branch "cargo-incremental-build", create it if it does not already
     // exist.
     create_branch_if_new(repo, "cargo-incremental-build", &current_head);
-    reset_branch(repo, "refs/heads/cargo-incremental-build");
+    set_head(repo, "refs/heads/cargo-incremental-build");
 
     // Commit a checkpoint.
     maybe_commit_checkpoint(repo);
 
     // Reset back to the initial head.
     println!("bringing head back to initial state");
-    reset_branch(repo, current_head.name().unwrap());
+    set_head(repo, current_head.name().unwrap());
 
     let incr_dir = Path::new("build-cache");
 
@@ -78,7 +87,7 @@ pub fn build(args: &Args) {
              build_reuse);
 }
 
-fn reset_branch(repo: &Repository, branch: &str) {
+fn set_head(repo: &Repository, branch: &str) {
     match repo.set_head(branch) {
         Ok(()) => {}
         Err(err) => error!("encountered error adjusting head: {}", err),
