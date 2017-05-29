@@ -452,7 +452,7 @@ fn cargo_test(cargo_dir: &Path,
 
     test_results.sort();
 
-    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured$")
+    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured")
         .unwrap();
 
     let nb_tests_summary = summary_regex.captures_iter(&all_output)
