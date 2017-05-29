@@ -421,6 +421,8 @@ fn cargo_test(cargo_dir: &Path,
                             rustflags));
         }
     }
+    debug!("{:?}", cmd);
+
     let output = cmd.output();
     let output = match output {
         Ok(output) => {
@@ -450,7 +452,7 @@ fn cargo_test(cargo_dir: &Path,
 
     test_results.sort();
 
-    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured$")
+    let summary_regex = Regex::new(r"(?m)(\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured")
         .unwrap();
 
     let nb_tests_summary = summary_regex.captures_iter(&all_output)
@@ -462,6 +464,8 @@ fn cargo_test(cargo_dir: &Path,
         });
 
     if nb_tests_summary != test_results.len() {
+        util::print_output(&output);
+
         error!("matched a different number of tests ({}) than in the summary ({})",
                test_results.len(),
                nb_tests_summary);

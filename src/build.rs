@@ -76,9 +76,9 @@ pub fn build(args: &Args) {
         println!("{}", m.message);
     }
 
-    let build_reuse = match stats.modules_total as f32 {
-        0.0 => 100.0,
-        n => stats.modules_reused as f32 / n * 100.0,
+    let build_reuse = match stats.modules_total {
+        0 => 100.0,
+        n => stats.modules_reused as f32 / (n as f32) * 100.0,
     };
 
     println!("Modules reused: {} Total: {} Build reuse: {}%",
