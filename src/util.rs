@@ -283,7 +283,8 @@ pub fn cargo_build(cargo_dir: &Path,
                 .env("RUSTFLAGS",
                      format!("-Z incremental={} \
                               -Z incremental-info {} \
-                              -Z incremental-queries",
+                              -Z incremental-queries \
+                              -Z incremental-verify-ich",
                              incr_dir.display(),
                              rustflags));
         }
@@ -293,7 +294,8 @@ pub fn cargo_build(cargo_dir: &Path,
                 .arg("--")
                 .arg("-Z").arg(format!("incremental={}", incr_dir.display()))
                 .arg("-Z").arg("incremental-info")
-                .arg("-Z").arg("incremental-queries");
+                .arg("-Z").arg("incremental-queries")
+                .arg("-Z").arg("incremental-verify-ich");
         }
     }
 
