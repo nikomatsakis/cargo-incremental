@@ -280,6 +280,9 @@ pub fn cargo_build(cargo_dir: &Path,
             let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
             cmd.arg("build")
                 .arg("-v")
+                // We are setting rustc's incremental flags manually, so let's
+                // make cargo not interfere.
+                .env("CARGO_INCREMENTAL", "0")
                 .env("RUSTFLAGS",
                      format!("-Z incremental={} \
                               -Z incremental-info {} \
@@ -295,7 +298,8 @@ pub fn cargo_build(cargo_dir: &Path,
                 .arg("-Z").arg(format!("incremental={}", incr_dir.display()))
                 .arg("-Z").arg("incremental-info")
                 .arg("-Z").arg("incremental-queries")
-                .arg("-Z").arg("incremental-verify-ich");
+                .arg("-Z").arg("incremental-verify-ich")
+                .env("CARGO_INCREMENTAL", "0");
         }
     }
 
