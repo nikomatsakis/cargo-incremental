@@ -1,6 +1,6 @@
 [package]
 name = "cargo-incremental"
-version = "0.1.18"
+version = "0.1.19"
 authors = ["Niko Matsakis <niko@alum.mit.edu>"]
 license = "Apache-2.0/MIT"
 description = "A tool for using and testing rustc's incremental compilation support"
