@@ -272,6 +272,12 @@ pub fn cargo_build(cargo_dir: &Path,
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&cargo_dir);
     cmd.env("CARGO_TARGET_DIR", target_dir);
+
+    // We are setting rustc's incremental flags manually, so let's
+    // make cargo not interfere. And if we have IncrementalOptions::None then
+    // we explicitly don't want to default to incremental compilation.
+    cmd.env("CARGO_INCREMENTAL", "0");
+
     match incremental {
         IncrementalOptions::None => {
             cmd.arg("build").arg("-v");
@@ -280,9 +286,6 @@ pub fn cargo_build(cargo_dir: &Path,
             let rustflags = env::var("RUSTFLAGS").unwrap_or(String::new());
             cmd.arg("build")
                 .arg("-v")
-                // We are setting rustc's incremental flags manually, so let's
-                // make cargo not interfere.
-                .env("CARGO_INCREMENTAL", "0")
                 .env("RUSTFLAGS",
                      format!("-Z incremental={} \
                               -Z incremental-info {} \
@@ -298,8 +301,7 @@ pub fn cargo_build(cargo_dir: &Path,
                 .arg("-Z").arg(format!("incremental={}", incr_dir.display()))
                 .arg("-Z").arg("incremental-info")
                 .arg("-Z").arg("incremental-queries")
-                .arg("-Z").arg("incremental-verify-ich")
-                .env("CARGO_INCREMENTAL", "0");
+                .arg("-Z").arg("incremental-verify-ich");
         }
     }
 

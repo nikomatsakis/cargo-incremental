@@ -410,6 +410,12 @@ fn cargo_test(cargo_dir: &Path,
     cmd.current_dir(&cargo_dir);
     cmd.env("CARGO_TARGET_DIR", target_dir);
     cmd.arg("test");
+
+    // We are setting rustc's incremental flags manually, so let's
+    // make cargo not interfere. And if we have IncrementalOptions::None then
+    // we explicitly don't want to default to incremental compilation.
+    cmd.env("CARGO_INCREMENTAL", "0");
+
     match incremental {
         IncrementalOptions::None => {}
         IncrementalOptions::AllDeps(incr_dir) |
