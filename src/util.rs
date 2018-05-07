@@ -386,7 +386,7 @@ pub fn cargo_build(cargo_dir: &Path,
         stats.modules_total += total;
     }
 
-    let build_time_regex = Regex::new(r"(?m)^\s*Finished .* target\(s\) in ([0-9.]+) secs$")
+    let build_time_regex = Regex::new(r"(?m)^\s*Finished .* target\(s\) in ([0-9.]+)(( secs)|s)$")
         .unwrap();
     let mut build_time = None;
     for captures in build_time_regex.captures_iter(&all_output) {
